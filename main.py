@@ -790,32 +790,31 @@ if not is_print_mode:
                 # --- 工單刪除 ---
                 st.subheader("🗑️ 工單刪除")
                 with st.container(border=True):
-                    st.warning("⚠️ 警告：刪除工單會永久移除該筆 CSV 資料，請確認已備份。")
-                    del_wo_id = st.selectbox("選擇要刪除的 工單ID", [""] + list(admin_db['工單ID']), key="admin_del_wo")
+                    st.warning("⚠️ 警告：刪除工單會永久移除 CSV 資料，請確認已備份。\n請確認選取清單無誤後再刪除。")
+                    del_wo_ids = st.multiselect("選擇要刪除的工單ID，可多選", list(admin_db['工單ID']), key="admin_del_wo_multi")
                     
-                    if del_wo_id:
-                        wo_to_delete = admin_db[admin_db['工單ID'] == del_wo_id].iloc[0]
+                    if del_wo_ids:
                         st.write("**即將刪除的工單資料：**")
-                        st.json(wo_to_delete.to_dict())
+                        delete_preview_df = admin_db[admin_db['工單ID'].isin(del_wo_ids)]
+                        st.dataframe(delete_preview_df[[c for c in STANDARD_COLS if c in delete_preview_df.columns]], use_container_width=True)
                         
-                        del_text = st.text_input("請輸入 DELETE 確認刪除：", key="admin_del_text")
-                        del_wo_confirm = st.checkbox("我確認要永久刪除此工單", key="admin_del_wo_chk")
+                        del_wo_confirm = st.checkbox("我確認要永久刪除以上選取工單", key="admin_del_wo_chk")
                         
-                        if st.button("☠️ 永久刪除工單", type="primary"):
-                            if del_text != "DELETE":
-                                st.error("❌ 確認文字錯誤，請輸入大寫 DELETE。")
+                        if st.button("☠️ 永久刪除選取工單", type="primary"):
+                            if not del_wo_ids:
+                                st.error("❌ 請先選擇要刪除的工單。")
                             elif not del_wo_confirm:
-                                st.error("❌ 請勾選確認核取方塊。")
+                                st.error("❌ 請先勾選確認核取方塊。")
                             else:
                                 backup_path = backup_factory_db()
-                                admin_db = admin_db[admin_db['工單ID'] != del_wo_id]
+                                admin_db = admin_db[~admin_db['工單ID'].isin(del_wo_ids)]
                                 
                                 for c in STANDARD_COLS:
                                     if c not in admin_db.columns: admin_db[c] = ""
                                 admin_db = admin_db[STANDARD_COLS]
                                 admin_db.to_csv(DB_FILE, index=False)
                                 
-                                st.success(f"✅ 工單 {del_wo_id} 已成功刪除！已自動備份至：{backup_path}")
+                                st.success(f"✅ 已成功刪除 {len(del_wo_ids)} 筆工單！已自動備份至：{backup_path}")
                                 st.rerun()
 
         else:
