@@ -3,13 +3,14 @@ import pandas as pd
 import requests
 import os
 import altair as alt
+import shutil  
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 # --- 0. Streamlit 頁面設定 (必須在最前面) ---
-st.set_page_config(page_title="工廠生產管理系統 V4.3", layout="wide")
+st.set_page_config(page_title="工廠生產管理系統 V4.4.1", layout="wide")
 
 # --- 1. 系統常數、密碼與時區設定 ---
 TAIWAN_TZ = ZoneInfo("Asia/Taipei")
@@ -67,6 +68,22 @@ def parse_taiwan_time(value):
             return dt.tz_convert(TAIWAN_TZ)
     except Exception:
         return pd.NaT
+
+def backup_factory_db():
+    """自動備份 CSV 資料庫函式"""
+    if not os.path.exists(DB_FILE):
+        return None
+    
+    backup_dir = "backup"
+    if not os.path.exists(backup_dir):
+        os.makedirs(backup_dir)
+        
+    now_str = datetime.now(TAIWAN_TZ).strftime('%Y%m%d_%H%M%S')
+    backup_filename = f"factory_db_backup_{now_str}.csv"
+    backup_path = os.path.join(backup_dir, backup_filename)
+    
+    shutil.copy(DB_FILE, backup_path)
+    return backup_path
 
 def init_files():
     """初始化並整理舊資料欄位遷移與新欄位補齊"""
@@ -306,13 +323,12 @@ with st.sidebar:
                 send_unfinished_work_orders_reminder("手動測試")
                 st.success("✅ 未結案工單提醒指令已送出！(請檢查 LINE 或終端機)")
     else:
-        # 非主管模式，不顯示設定，只顯示提示
         st.info("🔒 系統設定需主管密碼")
 
 if not is_print_mode:
-    tab1, tab2 = st.tabs(["🏗️ 現場報工填寫", "📊 主管數據看板"])
+    tab1, tab2, tab3 = st.tabs(["🏗️ 現場報工填寫", "📊 主管數據看板", "🛠️ 主管後台管理"])
 else:
-    tab1, tab2 = st.empty(), st.container()
+    tab1, tab2, tab3 = st.empty(), st.container(), st.empty()
 
 # --- 頁籤 1：現場報工填寫 (免密碼開放使用) ---
 if not is_print_mode:
@@ -498,9 +514,9 @@ if not is_print_mode:
 with tab2:
     if st.session_state["is_admin"]:
         if is_print_mode:
-            st.markdown(f"<h1 style='text-align: center;'>工廠生產管理月報表 (V4.3) - {datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d')}</h1>", unsafe_allow_html=True)
+            st.markdown(f"<h1 style='text-align: center;'>工廠生產管理月報表 (V4.4.1) - {datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d')}</h1>", unsafe_allow_html=True)
         else:
-            st.title("📊 生產數據看板 (V4.3)")
+            st.title("📊 生產數據看板 (V4.4.1)")
 
         if os.path.exists(DB_FILE):
             full_df = normalize_db_df(pd.read_csv(DB_FILE))
@@ -619,3 +635,175 @@ with tab2:
                 )
     else:
         st.warning("🔒 主管數據看板需輸入主管密碼才能查看。\n請在左側「主管登入」輸入密碼。")
+
+# --- 頁籤 3：主管後台管理 (受密碼保護) ---
+if not is_print_mode:
+    with tab3:
+        if st.session_state["is_admin"]:
+            st.title("🛠️ 主管後台管理")
+            st.info("此區塊專供主管進行人員與工單資料的強制修正與清理。")
+            
+            # --- 人員名單管理 ---
+            st.subheader("👤 人員名單管理")
+            with st.container(border=True):
+                admin_emps = load_employees()
+                st.write("**目前系統人員名單：**")
+                st.dataframe(pd.DataFrame({"員工名字": admin_emps}), use_container_width=True)
+                
+                st.write("**移除人員操作：**")
+                del_emp = st.selectbox("選擇要移除的人員", [""] + admin_emps, key="admin_del_emp")
+                del_emp_confirm = st.checkbox("我確認要從人員名單移除此人", key="admin_del_emp_chk")
+                
+                if st.button("🗑️ 移除人員", type="primary"):
+                    if not del_emp:
+                        st.error("❌ 請先選擇要移除的人員。")
+                    elif not del_emp_confirm:
+                        st.error("❌ 請勾選確認核取方塊。")
+                    else:
+                        new_emps = [e for e in admin_emps if e != del_emp]
+                        pd.DataFrame({"員工名字": new_emps}).to_csv(SETTING_FILE, index=False)
+                        st.success(f"✅ 已移除：{del_emp}。 (注意：歷史工單紀錄仍保留)")
+                        st.rerun()
+
+            st.divider()
+
+            # --- 讀取全域資料供修正與刪除使用 ---
+            if os.path.exists(DB_FILE):
+                admin_db = normalize_db_df(pd.read_csv(DB_FILE))
+                
+                # --- 工單資料修正 ---
+                st.subheader("📝 工單資料修正")
+                with st.container(border=True):
+                    st.write("**步驟一：篩選要修改的工單**")
+                    col_f1, col_f2, col_f3, col_f4, col_f5 = st.columns(5)
+                    
+                    with col_f1:
+                        # 修正 2：更穩定的日期預設邏輯
+                        try:
+                            admin_db['過濾日期'] = pd.to_datetime(admin_db['開始時間'], errors='coerce').dt.date
+                            valid_dates = admin_db['過濾日期'].dropna()
+                            if valid_dates.empty:
+                                admin_d_range = st.date_input("日期區間 (選填)", [])
+                            else:
+                                min_d = valid_dates.min()
+                                max_d = valid_dates.max()
+                                admin_d_range = st.date_input("日期區間 (選填)", value=[min_d, max_d])
+                        except:
+                            admin_d_range = []
+                            
+                    with col_f2:
+                        # 修正 1：歷史員工加入篩選選單 (且過濾空值避免介面異常)
+                        all_emp_names = sorted(set(e for e in (load_employees() + admin_db["填寫人"].dropna().astype(str).tolist()) if e.strip()))
+                        admin_s_emp = st.selectbox("填寫人", ["全部"] + all_emp_names, key="admin_s_emp")
+                        
+                    with col_f3: admin_s_status = st.selectbox("工單狀態", ["全部", "進行中", "暫停中", "已完成"], key="admin_s_status")
+                    with col_f4: admin_s_type = st.selectbox("生產類型", ["全部"] + PROD_TYPES, key="admin_s_type")
+                    with col_f5: admin_s_kw = st.text_input("圖號關鍵字搜尋", key="admin_s_kw").strip()
+
+                    # 執行篩選
+                    edit_df = admin_db.copy()
+                    if isinstance(admin_d_range, (list, tuple)) and len(admin_d_range) == 2:
+                        edit_df = edit_df[(edit_df['過濾日期'] >= admin_d_range[0]) & (edit_df['過濾日期'] <= admin_d_range[1])]
+                    if admin_s_emp != "全部": edit_df = edit_df[edit_df['填寫人'] == admin_s_emp]
+                    if admin_s_status != "全部": edit_df = edit_df[edit_df['狀態'] == admin_s_status]
+                    if admin_s_type != "全部": edit_df = edit_df[edit_df['生產類型'] == admin_s_type]
+                    if admin_s_kw: edit_df = edit_df[edit_df['圖號'].astype(str).str.contains(admin_s_kw, na=False)]
+                    
+                    st.write(f"篩選結果：共 {len(edit_df)} 筆")
+                    st.dataframe(edit_df[[c for c in STANDARD_COLS if c in edit_df.columns]], height=200)
+
+                    st.write("**步驟二：選擇並修改工單**")
+                    edit_wo_id = st.selectbox("選擇要修改的 工單ID", [""] + list(edit_df['工單ID']), key="admin_edit_wo")
+                    
+                    if edit_wo_id:
+                        wo_data = admin_db[admin_db['工單ID'] == edit_wo_id].iloc[0]
+                        st.info("請直接在下方修改欄位內容：")
+                        
+                        col_ed1, col_ed2, col_ed3 = st.columns(3)
+                        with col_ed1:
+                            new_emp = st.text_input("填寫人", value=str(wo_data.get('填寫人', '')))
+                            new_type = st.selectbox("生產類型", PROD_TYPES, index=PROD_TYPES.index(wo_data.get('生產類型', '正常生產')) if wo_data.get('生產類型', '正常生產') in PROD_TYPES else 0, key="ed_type")
+                            new_drawing = st.text_input("圖號", value=str(wo_data.get('圖號', '')))
+                            new_status = st.selectbox("狀態", ["進行中", "暫停中", "已完成"], index=["進行中", "暫停中", "已完成"].index(wo_data.get('狀態', '已完成')) if wo_data.get('狀態', '已完成') in ["進行中", "暫停中", "已完成"] else 2, key="ed_status")
+                        with col_ed2:
+                            new_est = st.number_input("預估工時", value=float(wo_data.get('預估工時', 0.0)), step=0.1)
+                            new_act = st.number_input("實際工時", value=float(wo_data.get('實際工時', 0.0)), step=0.1)
+                            new_work = st.number_input("工作區間工時", value=float(wo_data.get('工作區間工時', 0.0)), step=0.1)
+                            new_acc = st.number_input("累積工作區間工時", value=float(wo_data.get('累積工作區間工時', 0.0)), step=0.1)
+                        with col_ed3:
+                            new_start = st.text_input("開始時間 (YYYY-MM-DD HH:MM:SS)", value=str(wo_data.get('開始時間', '')))
+                            new_end = st.text_input("結束時間 (YYYY-MM-DD HH:MM:SS)", value=str(wo_data.get('結束時間', '')))
+                            new_pause_r = st.text_input("暫停原因", value=str(wo_data.get('暫停原因', '')))
+                            new_note = st.text_area("備註", value=str(wo_data.get('備註', '')))
+                            
+                        edit_confirm = st.checkbox("我確認要修改這筆工單資料", key="admin_edit_chk")
+                        if st.button("💾 儲存工單修改", type="primary"):
+                            if edit_confirm:
+                                # 備份
+                                backup_path = backup_factory_db()
+                                # 寫入
+                                mask = admin_db['工單ID'] == edit_wo_id
+                                admin_db.loc[mask, '填寫人'] = new_emp
+                                admin_db.loc[mask, '生產類型'] = new_type
+                                admin_db.loc[mask, '圖號'] = new_drawing
+                                admin_db.loc[mask, '預估工時'] = new_est
+                                admin_db.loc[mask, '實際工時'] = new_act
+                                admin_db.loc[mask, '工作區間工時'] = new_work
+                                admin_db.loc[mask, '累積工作區間工時'] = new_acc
+                                admin_db.loc[mask, '開始時間'] = new_start
+                                admin_db.loc[mask, '結束時間'] = new_end
+                                admin_db.loc[mask, '暫停原因'] = new_pause_r
+                                admin_db.loc[mask, '狀態'] = new_status
+                                admin_db.loc[mask, '備註'] = new_note
+                                
+                                # 自動重算時間差異
+                                admin_db.loc[mask, '時間差異'] = round(new_work - new_act, 2)
+                                
+                                # 安全寫回
+                                for c in STANDARD_COLS:
+                                    if c not in admin_db.columns: admin_db[c] = ""
+                                admin_db = admin_db[STANDARD_COLS]
+                                admin_db.to_csv(DB_FILE, index=False)
+                                
+                                st.success(f"✅ 修改成功！已自動備份至：{backup_path}")
+                                st.rerun()
+                            else:
+                                st.error("❌ 請勾選確認核取方塊。")
+
+                st.divider()
+
+                # --- 工單刪除 ---
+                st.subheader("🗑️ 工單刪除")
+                with st.container(border=True):
+                    st.warning("⚠️ 警告：刪除工單會永久移除該筆 CSV 資料，請確認已備份。")
+                    del_wo_id = st.selectbox("選擇要刪除的 工單ID", [""] + list(admin_db['工單ID']), key="admin_del_wo")
+                    
+                    if del_wo_id:
+                        wo_to_delete = admin_db[admin_db['工單ID'] == del_wo_id].iloc[0]
+                        st.write("**即將刪除的工單資料：**")
+                        st.json(wo_to_delete.to_dict())
+                        
+                        del_text = st.text_input("請輸入 DELETE 確認刪除：", key="admin_del_text")
+                        del_wo_confirm = st.checkbox("我確認要永久刪除此工單", key="admin_del_wo_chk")
+                        
+                        if st.button("☠️ 永久刪除工單", type="primary"):
+                            if del_text != "DELETE":
+                                st.error("❌ 確認文字錯誤，請輸入大寫 DELETE。")
+                            elif not del_wo_confirm:
+                                st.error("❌ 請勾選確認核取方塊。")
+                            else:
+                                # 備份
+                                backup_path = backup_factory_db()
+                                # 刪除
+                                admin_db = admin_db[admin_db['工單ID'] != del_wo_id]
+                                
+                                for c in STANDARD_COLS:
+                                    if c not in admin_db.columns: admin_db[c] = ""
+                                admin_db = admin_db[STANDARD_COLS]
+                                admin_db.to_csv(DB_FILE, index=False)
+                                
+                                st.success(f"✅ 工單 {del_wo_id} 已成功刪除！已自動備份至：{backup_path}")
+                                st.rerun()
+
+        else:
+            st.warning("🔒 主管後台管理需輸入主管密碼才能使用。\n請在左側「主管登入」輸入密碼。")
