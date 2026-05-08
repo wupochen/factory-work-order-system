@@ -16,7 +16,19 @@ st.set_page_config(page_title="工廠生產管理系統 V4.5.1", layout="wide")
 TAIWAN_TZ = ZoneInfo("Asia/Taipei")
 DB_FILE = 'factory_db.csv'
 SETTING_FILE = 'settings.csv'
-DEFAULT_EMPS = ["劉信佑", "詹聰實", "李昱緯", "陳思豪"]
+DEFAULT_EMPS = [
+    "劉信佑",
+    "詹聰寶",
+    "李昱緯",
+    "陳思豪",
+    "林辰諺",
+    "陳俊誠",
+    "吳譽鉫",
+    "陳義棋",
+    "黃聖翔",
+    "吳柏漢",
+    "邱郁琮"
+]
 
 # 生產類型與中越對照表 (統一越南文用詞)
 PROD_TYPES = ["正常生產", "插件", "NG重修", "重製"]
@@ -108,10 +120,20 @@ def backup_factory_db():
     return backup_path
 
 def init_files():
-    """初始化並整理舊資料欄位遷移與新欄位(工件數量)補齊"""
+    """初始化並整理舊資料欄位遷移與新欄位(工件數量)補齊，及確保人員名單完整"""
     if not os.path.exists(SETTING_FILE):
         pd.DataFrame({"員工名字": DEFAULT_EMPS}).to_csv(SETTING_FILE, index=False)
-    
+    else:
+        try:
+            df_settings = pd.read_csv(SETTING_FILE)
+            existing_emps = df_settings["員工名字"].dropna().astype(str).str.strip().tolist()
+            missing_emps = [e for e in DEFAULT_EMPS if e not in existing_emps]
+            if missing_emps:
+                updated_emps = existing_emps + missing_emps
+                pd.DataFrame({"員工名字": updated_emps}).to_csv(SETTING_FILE, index=False)
+        except Exception:
+            pass
+            
     if not os.path.exists(DB_FILE):
         pd.DataFrame(columns=STANDARD_COLS).to_csv(DB_FILE, index=False)
     else:
@@ -544,16 +566,22 @@ with tab2:
             if '生產類型' in full_df.columns:
                 full_df['生產類型'] = full_df['生產類型'].replace({'NG修復': 'NG重修'})
             
-            full_df['開始時間'] = full_df['開始時間'].fillna("")
-            full_df['開始時間_dt'] = full_df['開始時間'].apply(parse_taiwan_time)
+            full_df['開始時間'] = full_df['開始時間'].fillna("").astype(str)
+
+            full_df['開始時間_dt'] = pd.to_datetime(
+                full_df['開始時間'],
+                errors='coerce'
+            )
+
             full_df = full_df.dropna(subset=['開始時間_dt'])
-            
+
+            if full_df.empty:
+                st.info("尚未有有效數據。")
+                st.stop()
+
             full_df['日期_date'] = full_df['開始時間_dt'].dt.date
             full_df['年月'] = full_df['開始時間_dt'].dt.strftime('%Y-%m')
             full_df['月日'] = full_df['開始時間_dt'].dt.strftime('%m-%d')
-            
-            if full_df.empty:
-                st.info("尚未有有效數據。"); st.stop()
 
             with st.container(border=not is_print_mode):
                 c1, c2, c3, c4, c5 = st.columns([1.5, 2, 2, 2, 2])
