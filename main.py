@@ -9,14 +9,17 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 # --- 0. Streamlit 頁面設定 (必須在最前面) ---
-st.set_page_config(page_title="工廠生產管理系統 V4.2.1", layout="wide")
+st.set_page_config(page_title="工廠生產管理系統 V4.3", layout="wide")
 
-# --- 1. 系統常數與時區設定 ---
+# --- 1. 系統常數、密碼與時區設定 ---
 TAIWAN_TZ = ZoneInfo("Asia/Taipei")
 DB_FILE = 'factory_db.csv'
 SETTING_FILE = 'settings.csv'
 DEFAULT_EMPS = ["劉信佑", "詹聰實", "李昱緯", "陳思豪"]
 PROD_TYPES = ["正常生產", "插件", "NG重修", "重製"]
+
+# 主管密碼設定
+ADMIN_PASSWORD = "0000"
 
 # STANDARD_COLS 標準欄位定義
 STANDARD_COLS = [
@@ -25,6 +28,10 @@ STANDARD_COLS = [
     '累積工作區間工時', '最後恢復時間', '暫停時間', '暫停原因',
     '時間差異', '狀態', '備註'
 ]
+
+# 初始化 Session State (紀錄登入狀態)
+if "is_admin" not in st.session_state:
+    st.session_state["is_admin"] = False
 
 # 讀取 LINE Messaging API Secrets
 try:
@@ -226,61 +233,88 @@ init_files()
 init_scheduler()
 
 # --- 3. 網頁 UI 介面 ---
+is_print_mode = False
+
 with st.sidebar:
-    st.title("⚙️ 系統設定")
-    is_print_mode = st.checkbox("🖨️ 開啟列印月報模式", value=False)
+    st.title("🔐 主管權限")
     
-    if not is_print_mode:
-        st.divider()
-        with st.expander("👤 人員名單維護"):
-            current_list = load_employees()
-            new_emp = st.text_input("新增員工姓名").strip()
-            if st.button("確認新增"):
-                if not new_emp: st.warning("請輸入姓名。")
-                elif new_emp in current_list: st.error("姓名已在名單中。")
-                else:
-                    pd.DataFrame({"員工名字": current_list + [new_emp]}).to_csv(SETTING_FILE, index=False)
-                    st.success(f"已新增：{new_emp}"); st.rerun()
-        
-        st.divider()
-        st.subheader("💬 LINE 通知設定狀態")
-        if LINE_CHANNEL_ACCESS_TOKEN: st.write("✅ LINE Token 已設定")
-        else: st.write("❌ LINE_CHANNEL_ACCESS_TOKEN 尚未設定")
-
-        if LINE_TO_ID: st.write("✅ LINE_TO_ID 已設定")
-        else: st.write("❌ LINE_TO_ID 尚未設定")
-
-        st.write("🕓 未結案提醒：每日 16:55、18:00、21:00 自動推播")
-
-        st.caption("""
-        **LINE_TO_ID 可以是：**
-        1. 主管個人的 userId
-        2. 公司 LINE 群組的 groupId
-        3. 多人聊天室的 roomId
-        """)
-
-        if st.button("📩 測試 LINE 通知"):
-            now_str = datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d %H:%M:%S')
-            test_msg = f"\n測試通知：\n工廠生產管理系統 LINE Messaging API 已連線成功。\n時間：台灣時間 {now_str}"
-            
-            line_ok, line_error = send_line_message(test_msg)
-            if line_ok:
-                st.success("✅ LINE 測試通知已送出")
+    # --- 主管登入區塊 ---
+    if not st.session_state["is_admin"]:
+        pwd = st.text_input("主管密碼", type="password")
+        if st.button("登入主管模式"):
+            if pwd == ADMIN_PASSWORD:
+                st.session_state["is_admin"] = True
+                st.success("✅ 已進入主管模式")
+                st.rerun()
             else:
-                st.error("❌ LINE 測試通知失敗")
-                st.caption(line_error)
+                st.error("❌ 密碼錯誤")
+    else:
+        st.success("✅ 已登入主管模式")
+        if st.button("登出主管模式"):
+            st.session_state["is_admin"] = False
+            st.info("已登出主管模式")
+            st.rerun()
+
+    st.divider()
+
+    # --- 受保護的系統設定區塊 ---
+    if st.session_state["is_admin"]:
+        st.title("⚙️ 系統設定")
+        is_print_mode = st.checkbox("🖨️ 開啟列印月報模式", value=False)
+        
+        if not is_print_mode:
+            st.divider()
+            with st.expander("👤 人員名單維護"):
+                current_list = load_employees()
+                new_emp = st.text_input("新增員工姓名").strip()
+                if st.button("確認新增"):
+                    if not new_emp: st.warning("請輸入姓名。")
+                    elif new_emp in current_list: st.error("姓名已在名單中。")
+                    else:
+                        pd.DataFrame({"員工名字": current_list + [new_emp]}).to_csv(SETTING_FILE, index=False)
+                        st.success(f"已新增：{new_emp}"); st.rerun()
+            
+            st.divider()
+            st.subheader("💬 LINE 通知設定狀態")
+            if LINE_CHANNEL_ACCESS_TOKEN: st.write("✅ LINE Token 已設定")
+            else: st.write("❌ LINE_CHANNEL_ACCESS_TOKEN 尚未設定")
+
+            if LINE_TO_ID: st.write("✅ LINE_TO_ID 已設定")
+            else: st.write("❌ LINE_TO_ID 尚未設定")
+
+            st.write("🕓 未結案提醒：每日 16:55、18:00、21:00 自動推播")
+
+            st.caption("""
+            **LINE_TO_ID 可以是：**
+            1. 主管個人的 userId
+            2. 公司 LINE 群組的 groupId
+            3. 多人聊天室的 roomId
+            """)
+
+            if st.button("📩 測試 LINE 通知"):
+                now_str = datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d %H:%M:%S')
+                test_msg = f"\n測試通知：\n工廠生產管理系統 LINE Messaging API 已連線成功。\n時間：台灣時間 {now_str}"
                 
-        # 手動未結案提醒按鈕
-        if st.button("🔔 測試未結案工單提醒"):
-            send_unfinished_work_orders_reminder("手動測試")
-            st.success("✅ 未結案工單提醒指令已送出！(請檢查 LINE 或終端機)")
+                line_ok, line_error = send_line_message(test_msg)
+                if line_ok:
+                    st.success("✅ LINE 測試通知已送出")
+                else:
+                    st.error("❌ LINE 測試通知失敗")
+                    st.caption(line_error)
+                    
+            if st.button("🔔 測試未結案工單提醒"):
+                send_unfinished_work_orders_reminder("手動測試")
+                st.success("✅ 未結案工單提醒指令已送出！(請檢查 LINE 或終端機)")
+    else:
+        # 非主管模式，不顯示設定，只顯示提示
+        st.info("🔒 系統設定需主管密碼")
 
 if not is_print_mode:
     tab1, tab2 = st.tabs(["🏗️ 現場報工填寫", "📊 主管數據看板"])
 else:
     tab1, tab2 = st.empty(), st.container()
 
-# --- 頁籤 1：現場報工填寫 ---
+# --- 頁籤 1：現場報工填寫 (免密碼開放使用) ---
 if not is_print_mode:
     with tab1:
         st.header("現場即時加工報工")
@@ -460,125 +494,128 @@ if not is_print_mode:
                                 st.success("▶️ 已恢復加工！"); st.rerun()
                             else: st.error("❌ 狀態錯誤，無法繼續。")
 
-# --- 頁籤 2：主管數據看板 ---
+# --- 頁籤 2：主管數據看板 (受密碼保護) ---
 with tab2:
-    if is_print_mode:
-        st.markdown(f"<h1 style='text-align: center;'>工廠生產管理月報表 (V4.2.1) - {datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d')}</h1>", unsafe_allow_html=True)
-    else:
-        st.title("📊 生產數據看板 (V4.2.1)")
+    if st.session_state["is_admin"]:
+        if is_print_mode:
+            st.markdown(f"<h1 style='text-align: center;'>工廠生產管理月報表 (V4.3) - {datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d')}</h1>", unsafe_allow_html=True)
+        else:
+            st.title("📊 生產數據看板 (V4.3)")
 
-    if os.path.exists(DB_FILE):
-        full_df = normalize_db_df(pd.read_csv(DB_FILE))
-        if '生產類型' in full_df.columns:
-            full_df['生產類型'] = full_df['生產類型'].replace({'NG修復': 'NG重修'})
-        
-        full_df['開始時間'] = full_df['開始時間'].fillna("")
-        full_df['開始時間_dt'] = full_df['開始時間'].apply(parse_taiwan_time)
-        full_df = full_df.dropna(subset=['開始時間_dt'])
-        
-        full_df['日期_date'] = full_df['開始時間_dt'].dt.date
-        full_df['年月'] = full_df['開始時間_dt'].dt.strftime('%Y-%m')
-        full_df['月日'] = full_df['開始時間_dt'].dt.strftime('%m-%d')
-        
-        if full_df.empty:
-            st.info("尚未有有效數據。"); st.stop()
-
-        with st.container(border=not is_print_mode):
-            c1, c2, c3, c4, c5 = st.columns([1.5, 2, 2, 2, 2])
-            with c1: v_mode = st.radio("檢視模式", ["整體", "個人"], horizontal=True)
-            with c2: s_emp = st.selectbox("員工篩選", load_employees(), disabled=(v_mode=="整體"))
-            with c3: d_range = st.date_input("日期區間", [full_df['日期_date'].min(), full_df['日期_date'].max()])
-            with c4: s_status = st.selectbox("工單狀態", ["已完成", "進行中", "暫停中", "全部"])
-            with c5: s_type = st.selectbox("生產類型篩選", ["全部"] + PROD_TYPES)
-        
-        f_df = full_df.copy()
-        if v_mode == "個人": f_df = f_df[f_df['填寫人'] == s_emp]
-        if isinstance(d_range, (list, tuple)) and len(d_range) == 2:
-            f_df = f_df[(f_df['日期_date'] >= d_range[0]) & (f_df['日期_date'] <= d_range[1])]
-        if s_status != "全部": f_df = f_df[f_df['狀態'] == s_status]
-        if s_type != "全部": f_df = f_df[f_df['生產類型'] == s_type]
-
-        if f_df.empty: st.warning("目前篩選條件下沒有資料。"); st.stop()
-
-        done_df = f_df[f_df['狀態'] == '已完成']
-        ing_df = f_df[f_df['狀態'] == '進行中']
-        pause_df = f_df[f_df['狀態'] == '暫停中']
-        
-        st.markdown("### 📌 關鍵指標彙總")
-        k1, k2, k3, k4, k5, k6 = st.columns(6)
-        k1.metric("總工作區間", f"{round(done_df['工作區間工時'].sum(), 1)} h")
-        k2.metric("總實際加工", f"{round(done_df['實際工時'].sum(), 1)} h")
-        k3.metric("區間未加工時間", f"{round(done_df['時間差異'].sum(), 1)} h", delta_color="inverse")
-        k4.metric("進行中工單", f"{len(ing_df)} 筆")
-        k5.metric("暫停中工單", f"{len(pause_df)} 筆")
-        k6.metric("已完成工單", f"{len(done_df)} 筆")
-
-        if not pause_df.empty and not is_print_mode:
-            st.warning("⏸️ 目前有暫停中工單，請確認是否為下班未完成、臨時插件、等料或其他原因。")
-            show_cols = ['工單ID', '填寫人', '生產類型', '圖號', '開始時間', '暫停時間', '暫停原因', '累積工作區間工時']
-            st.dataframe(pause_df[[c for c in show_cols if c in pause_df.columns]], use_container_width=True)
-
-        with st.container(border=True):
-            st.markdown("### 📈 數據分析戰情室")
-            if s_status in ["進行中", "暫停中"]:
-                st.warning(f"ℹ️ 狀態為「{s_status}」的工單尚未結案，暫不納入統計。")
-            elif done_df.empty:
-                st.info("目前沒有已完成工單，暫無正式圖表。")
-            else:
-                t_level = st.radio("分析層級", ["月統計", "日統計", "工單明細"], horizontal=True)
-                if t_level == "月統計": x_field = "年月"
-                elif t_level == "日統計": x_field = "月日"
-                else: x_field = "工單ID"
-
-                chart_df = done_df.groupby([x_field, '生產類型']).agg({'實際工時':'sum', '預估工時':'sum'}).reset_index()
-                time_agg = done_df.groupby(x_field).agg({'實際工時':'sum', '預估工時':'sum'}).reset_index()
-                time_agg['偏差'] = time_agg['實際工時'] - time_agg['預估工時']
-                time_agg['標籤'] = time_agg['偏差'].apply(lambda x: f"{'+' if x>0 else ''}{round(x,1)}h")
-                time_agg['偏差顏色'] = time_agg['偏差'].apply(get_diff_color)
-
-                c_range = ['#1f77b4', '#ff7f0e', '#d62728', '#9467bd'] if not is_print_mode else ['#333', '#666', '#999', '#CCC']
-
-                bars = alt.Chart(chart_df).mark_bar().encode(
-                    x=alt.X(f'{x_field}:N', title='時間維度', axis=alt.Axis(labelAngle=-20)),
-                    y=alt.Y('實際工時:Q', title='工時 (h)'),
-                    xOffset=alt.XOffset('生產類型:N'),
-                    color=alt.Color('生產類型:N', scale=alt.Scale(domain=PROD_TYPES, range=c_range))
-                )
-                
-                line = alt.Chart(time_agg).mark_line(point=True, color='black').encode(
-                    x=alt.X(f'{x_field}:N'),
-                    y=alt.Y('預估工時:Q')
-                )
-                
-                text = alt.Chart(time_agg).mark_text(dy=-15, fontWeight='bold').encode(
-                    x=alt.X(f'{x_field}:N'), y='實際工時:Q', text='標籤:N',
-                    color=alt.Color('偏差顏色:N', scale=None)
-                )
-                st.altair_chart((bars + line + text).properties(height=350), use_container_width=True)
-
-        st.write("### 📅 每月彙總數據表")
-        if not done_df.empty:
-            pivot_df = done_df.pivot_table(index='年月', columns='生產類型', values='實際工時', aggfunc='sum').fillna(0)
-            for col in PROD_TYPES:
-                if col not in pivot_df.columns: pivot_df[col] = 0
-            sum_df = done_df.groupby('年月').agg({'預估工時':'sum', '實際工時':'sum', '工作區間工時':'sum', '時間差異':'sum'})
+        if os.path.exists(DB_FILE):
+            full_df = normalize_db_df(pd.read_csv(DB_FILE))
+            if '生產類型' in full_df.columns:
+                full_df['生產類型'] = full_df['生產類型'].replace({'NG修復': 'NG重修'})
             
-            format_dict = {
-                '預估工時': '{:.1f}', '實際工時': '{:.1f}', '工作區間工時': '{:.1f}',
-                '時間差異': '{:.1f}', '正常生產': '{:.1f}', '插件': '{:.1f}',
-                'NG重修': '{:.1f}', '重製': '{:.1f}'
-            }
-            st.dataframe(pd.concat([sum_df, pivot_df], axis=1).style.format(format_dict), use_container_width=True)
+            full_df['開始時間'] = full_df['開始時間'].fillna("")
+            full_df['開始時間_dt'] = full_df['開始時間'].apply(parse_taiwan_time)
+            full_df = full_df.dropna(subset=['開始時間_dt'])
+            
+            full_df['日期_date'] = full_df['開始時間_dt'].dt.date
+            full_df['年月'] = full_df['開始時間_dt'].dt.strftime('%Y-%m')
+            full_df['月日'] = full_df['開始時間_dt'].dt.strftime('%m-%d')
+            
+            if full_df.empty:
+                st.info("尚未有有效數據。"); st.stop()
 
-        st.write("### 🔍 詳細生產紀錄清單")
-        show_df = f_df[[c for c in STANDARD_COLS if c in f_df.columns]]
-        st.dataframe(show_df, use_container_width=True)
-        
-        if not is_print_mode:
-            csv_data = show_df.to_csv(index=False).encode('utf-8-sig')
-            st.download_button(
-                "📥 下載篩選後 CSV 報表", 
-                csv_data, 
-                f"Report_{datetime.now(TAIWAN_TZ).strftime('%Y%m%d')}.csv", 
-                "text/csv"
-            )
+            with st.container(border=not is_print_mode):
+                c1, c2, c3, c4, c5 = st.columns([1.5, 2, 2, 2, 2])
+                with c1: v_mode = st.radio("檢視模式", ["整體", "個人"], horizontal=True)
+                with c2: s_emp = st.selectbox("員工篩選", load_employees(), disabled=(v_mode=="整體"))
+                with c3: d_range = st.date_input("日期區間", [full_df['日期_date'].min(), full_df['日期_date'].max()])
+                with c4: s_status = st.selectbox("工單狀態", ["已完成", "進行中", "暫停中", "全部"])
+                with c5: s_type = st.selectbox("生產類型篩選", ["全部"] + PROD_TYPES)
+            
+            f_df = full_df.copy()
+            if v_mode == "個人": f_df = f_df[f_df['填寫人'] == s_emp]
+            if isinstance(d_range, (list, tuple)) and len(d_range) == 2:
+                f_df = f_df[(f_df['日期_date'] >= d_range[0]) & (f_df['日期_date'] <= d_range[1])]
+            if s_status != "全部": f_df = f_df[f_df['狀態'] == s_status]
+            if s_type != "全部": f_df = f_df[f_df['生產類型'] == s_type]
+
+            if f_df.empty: st.warning("目前篩選條件下沒有資料。"); st.stop()
+
+            done_df = f_df[f_df['狀態'] == '已完成']
+            ing_df = f_df[f_df['狀態'] == '進行中']
+            pause_df = f_df[f_df['狀態'] == '暫停中']
+            
+            st.markdown("### 📌 關鍵指標彙總")
+            k1, k2, k3, k4, k5, k6 = st.columns(6)
+            k1.metric("總工作區間", f"{round(done_df['工作區間工時'].sum(), 1)} h")
+            k2.metric("總實際加工", f"{round(done_df['實際工時'].sum(), 1)} h")
+            k3.metric("區間未加工時間", f"{round(done_df['時間差異'].sum(), 1)} h", delta_color="inverse")
+            k4.metric("進行中工單", f"{len(ing_df)} 筆")
+            k5.metric("暫停中工單", f"{len(pause_df)} 筆")
+            k6.metric("已完成工單", f"{len(done_df)} 筆")
+
+            if not pause_df.empty and not is_print_mode:
+                st.warning("⏸️ 目前有暫停中工單，請確認是否為下班未完成、臨時插件、等料或其他原因。")
+                show_cols = ['工單ID', '填寫人', '生產類型', '圖號', '開始時間', '暫停時間', '暫停原因', '累積工作區間工時']
+                st.dataframe(pause_df[[c for c in show_cols if c in pause_df.columns]], use_container_width=True)
+
+            with st.container(border=True):
+                st.markdown("### 📈 數據分析戰情室")
+                if s_status in ["進行中", "暫停中"]:
+                    st.warning(f"ℹ️ 狀態為「{s_status}」的工單尚未結案，暫不納入統計。")
+                elif done_df.empty:
+                    st.info("目前沒有已完成工單，暫無正式圖表。")
+                else:
+                    t_level = st.radio("分析層級", ["月統計", "日統計", "工單明細"], horizontal=True)
+                    if t_level == "月統計": x_field = "年月"
+                    elif t_level == "日統計": x_field = "月日"
+                    else: x_field = "工單ID"
+
+                    chart_df = done_df.groupby([x_field, '生產類型']).agg({'實際工時':'sum', '預估工時':'sum'}).reset_index()
+                    time_agg = done_df.groupby(x_field).agg({'實際工時':'sum', '預估工時':'sum'}).reset_index()
+                    time_agg['偏差'] = time_agg['實際工時'] - time_agg['預估工時']
+                    time_agg['標籤'] = time_agg['偏差'].apply(lambda x: f"{'+' if x>0 else ''}{round(x,1)}h")
+                    time_agg['偏差顏色'] = time_agg['偏差'].apply(get_diff_color)
+
+                    c_range = ['#1f77b4', '#ff7f0e', '#d62728', '#9467bd'] if not is_print_mode else ['#333', '#666', '#999', '#CCC']
+
+                    bars = alt.Chart(chart_df).mark_bar().encode(
+                        x=alt.X(f'{x_field}:N', title='時間維度', axis=alt.Axis(labelAngle=-20)),
+                        y=alt.Y('實際工時:Q', title='工時 (h)'),
+                        xOffset=alt.XOffset('生產類型:N'),
+                        color=alt.Color('生產類型:N', scale=alt.Scale(domain=PROD_TYPES, range=c_range))
+                    )
+                    
+                    line = alt.Chart(time_agg).mark_line(point=True, color='black').encode(
+                        x=alt.X(f'{x_field}:N'),
+                        y=alt.Y('預估工時:Q')
+                    )
+                    
+                    text = alt.Chart(time_agg).mark_text(dy=-15, fontWeight='bold').encode(
+                        x=alt.X(f'{x_field}:N'), y='實際工時:Q', text='標籤:N',
+                        color=alt.Color('偏差顏色:N', scale=None)
+                    )
+                    st.altair_chart((bars + line + text).properties(height=350), use_container_width=True)
+
+            st.write("### 📅 每月彙總數據表")
+            if not done_df.empty:
+                pivot_df = done_df.pivot_table(index='年月', columns='生產類型', values='實際工時', aggfunc='sum').fillna(0)
+                for col in PROD_TYPES:
+                    if col not in pivot_df.columns: pivot_df[col] = 0
+                sum_df = done_df.groupby('年月').agg({'預估工時':'sum', '實際工時':'sum', '工作區間工時':'sum', '時間差異':'sum'})
+                
+                format_dict = {
+                    '預估工時': '{:.1f}', '實際工時': '{:.1f}', '工作區間工時': '{:.1f}',
+                    '時間差異': '{:.1f}', '正常生產': '{:.1f}', '插件': '{:.1f}',
+                    'NG重修': '{:.1f}', '重製': '{:.1f}'
+                }
+                st.dataframe(pd.concat([sum_df, pivot_df], axis=1).style.format(format_dict), use_container_width=True)
+
+            st.write("### 🔍 詳細生產紀錄清單")
+            show_df = f_df[[c for c in STANDARD_COLS if c in f_df.columns]]
+            st.dataframe(show_df, use_container_width=True)
+            
+            if not is_print_mode:
+                csv_data = show_df.to_csv(index=False).encode('utf-8-sig')
+                st.download_button(
+                    "📥 下載篩選後 CSV 報表", 
+                    csv_data, 
+                    f"Report_{datetime.now(TAIWAN_TZ).strftime('%Y%m%d')}.csv", 
+                    "text/csv"
+                )
+    else:
+        st.warning("🔒 主管數據看板需輸入主管密碼才能查看。\n請在左側「主管登入」輸入密碼。")
