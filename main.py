@@ -211,16 +211,29 @@ def send_unfinished_work_orders_reminder(trigger_label="定時檢查"):
         
         now_dt = datetime.now(TAIWAN_TZ)
         now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+        local_now = datetime.now()
 
         if unfinished_df.empty:
             msg = (f"✅ 工單檢查通知\n"
                    f"提醒類型：{trigger_label}\n"
                    f"目前沒有未結案工單。\n"
-                   f"時間：台灣時間 {now_str}")
+                   f"時間：台灣時間 {now_str}\n"
+                   f"--- 偵錯資訊 ---\n"
+                   f"now(TAIWAN_TZ): {now_dt}\n"
+                   f"tzinfo: {now_dt.tzinfo}\n"
+                   f"scheduler_tz: {TAIWAN_TZ}\n"
+                   f"伺服器 local time: {local_now}\n"
+                   f"----------------")
         else:
             msg = (f"🔔 未結案工單提醒\n"
                    f"提醒類型：{trigger_label}\n"
-                   f"時間：台灣時間 {now_str}\n\n"
+                   f"時間：台灣時間 {now_str}\n"
+                   f"--- 偵錯資訊 ---\n"
+                   f"now(TAIWAN_TZ): {now_dt}\n"
+                   f"tzinfo: {now_dt.tzinfo}\n"
+                   f"scheduler_tz: {TAIWAN_TZ}\n"
+                   f"伺服器 local time: {local_now}\n"
+                   f"----------------\n\n"
                    f"目前仍有以下工單尚未完成：")
             
             count = 1
@@ -250,7 +263,7 @@ def send_unfinished_work_orders_reminder(trigger_label="定時檢查"):
                             f"   圖號：{row['圖號']}\n"
                             f"   數量：{row.get('工件數量', 1)}\n"
                             f"   開始時間：{row['開始時間']}\n"
-                            f"   累積工作區間：{current_total_h}h")
+                            f"   未結案經過時間：{current_total_h}h")
                             
                 elif status == '暫停中':
                     old_acc = pd.to_numeric(row.get('累積工作區間工時', 0), errors='coerce')
@@ -266,7 +279,7 @@ def send_unfinished_work_orders_reminder(trigger_label="定時檢查"):
                             f"   數量：{row.get('工件數量', 1)}\n"
                             f"   開始時間：{row['開始時間']}\n"
                             f"   暫停原因：{pause_reason}\n"
-                            f"   累積工作區間：{current_total_h}h")
+                            f"   未結案經過時間：{current_total_h}h")
                 count += 1
 
         line_ok, line_error = send_line_message(msg)
@@ -281,9 +294,21 @@ def send_unfinished_work_orders_reminder(trigger_label="定時檢查"):
 @st.cache_resource
 def init_scheduler():
     scheduler = BackgroundScheduler(timezone=TAIWAN_TZ)
-    scheduler.add_job(send_unfinished_work_orders_reminder, CronTrigger(hour=16, minute=55), args=["下班前 16:55 檢查"])
-    scheduler.add_job(send_unfinished_work_orders_reminder, CronTrigger(hour=18, minute=0), args=["下班後 18:00 檢查"])
-    scheduler.add_job(send_unfinished_work_orders_reminder, CronTrigger(hour=21, minute=0), args=["晚上 21:00 加班檢查"])
+    scheduler.add_job(
+        send_unfinished_work_orders_reminder,
+        CronTrigger(hour=16, minute=55, timezone=TAIWAN_TZ),
+        args=["下班前 16:55 檢查"]
+    )
+    scheduler.add_job(
+        send_unfinished_work_orders_reminder,
+        CronTrigger(hour=18, minute=0, timezone=TAIWAN_TZ),
+        args=["下班後 18:00 檢查"]
+    )
+    scheduler.add_job(
+        send_unfinished_work_orders_reminder,
+        CronTrigger(hour=21, minute=0, timezone=TAIWAN_TZ),
+        args=["晚上 21:00 加班檢查"]
+    )
     scheduler.start()
     return scheduler
 
@@ -754,11 +779,10 @@ with tab3:
                 full_df['生產類型'] = full_df['生產類型'].replace({'NG修復': 'NG重修'})
             
             full_df['開始時間'] = full_df['開始時間'].fillna("").astype(str)
-
-            full_df['開始時間_dt'] = pd.to_datetime(
-                full_df['開始時間'],
-                errors='coerce'
-            )
+            full_df['開始時間_dt'] = full_df['開始時間'].apply(parse_taiwan_time)
+            
+            full_df['結束時間'] = full_df['結束時間'].fillna("").astype(str)
+            full_df['結束時間_dt'] = full_df['結束時間'].apply(parse_taiwan_time)
 
             full_df = full_df.dropna(subset=['開始時間_dt'])
 
@@ -919,7 +943,7 @@ if not is_print_mode:
                         
                         with col_f1:
                             try:
-                                admin_db['過濾日期'] = pd.to_datetime(admin_db['開始時間'], errors='coerce').dt.date
+                                admin_db['過濾日期'] = admin_db['開始時間'].apply(parse_taiwan_time).dt.date
                                 valid_dates = admin_db['過濾日期'].dropna()
                                 if valid_dates.empty:
                                     admin_d_range = st.date_input("日期區間 (選填)", [])
