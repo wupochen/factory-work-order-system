@@ -3,3 +3,5 @@ pandas
 requests
 altair
 apscheduler
+gspread
+google-auth
