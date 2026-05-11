@@ -11,7 +11,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 # --- 0. Streamlit 頁面設定 (必須在最前面) ---
-st.set_page_config(page_title="工廠生產管理系統 V4.8 (雲端版)", layout="wide")
+st.set_page_config(page_title="工廠生產管理系統 V5 (防限流快取版)", layout="wide")
 
 # --- 1. 系統常數、密碼與時區設定 ---
 TAIWAN_TZ = ZoneInfo("Asia/Taipei")
@@ -137,8 +137,9 @@ def parse_taiwan_time(value):
     except Exception:
         return pd.NaT
 
-def init_gsheets():
-    """初始化並確保 Google Sheets 的表頭與工作表齊全"""
+@st.cache_resource
+def init_gsheets_once():
+    """初始化並確保 Google Sheets 的表頭與工作表齊全 (全域僅啟動時執行一次)"""
     gc = get_gsheet_client()
     if not gc: return
     try:
@@ -150,7 +151,6 @@ def init_gsheets():
             if not headers:
                 wo_sheet.append_row(STANDARD_COLS)
             else:
-                # 自動補齊缺少的表頭欄位並寫回 Google Sheets
                 missing = [c for c in STANDARD_COLS if c not in headers]
                 if missing:
                     headers.extend(missing)
@@ -168,8 +168,9 @@ def init_gsheets():
     except Exception as e:
         st.error(f"初始化 Google Sheets 失敗: {e}")
 
-def load_work_orders():
-    """從 Google Sheets 讀取最新的工單資料"""
+# --- 資料讀取區 (Raw) ---
+def load_work_orders_raw():
+    """從 Google Sheets 讀取最新工單資料 (僅在修改資料前呼叫，避免 429)"""
     gc = get_gsheet_client()
     if not gc: return pd.DataFrame(columns=STANDARD_COLS)
     try:
@@ -182,7 +183,6 @@ def load_work_orders():
         else:
             df = pd.DataFrame(data)
             
-        # 自動補齊缺少的標準欄位
         for c in STANDARD_COLS:
             if c not in df.columns:
                 if c in ['預估工時', '實際工時', '工作區間工時', '累積工作區間工時', '時間差異']: 
@@ -202,49 +202,8 @@ def load_work_orders():
         st.error(f"讀取 work_orders 失敗: {e}")
         return pd.DataFrame(columns=STANDARD_COLS)
 
-def save_work_orders(df):
-    """將工單資料整表覆蓋寫入 Google Sheets，並同步備份本機 CSV"""
-    # 注意：目前仍為整表覆寫。
-    # 所有修改動作都必須先重新 load_work_orders()，再用工單ID修改最新資料，避免覆蓋其他人的操作。
-    # 未來可升級成只更新指定列。
-    gc = get_gsheet_client()
-    if not gc: return
-    try:
-        sh = gc.open_by_key(st.secrets["GSHEET_ID"])
-        worksheet = sh.worksheet("work_orders")
-        
-        for c in STANDARD_COLS:
-            if c not in df.columns:
-                df[c] = ""
-        df = df[STANDARD_COLS]
-        df = df.fillna("")
-        
-        worksheet.clear()
-        worksheet.update(values=[df.columns.values.tolist()] + df.values.tolist(), range_name='A1')
-        
-        # 同步備份到本機 CSV
-        df.to_csv(DB_FILE, index=False, encoding='utf-8-sig')
-    except Exception as e:
-        st.error(f"寫入 work_orders 失敗: {e}")
-
-def append_work_order(row_dict):
-    """快速新增一筆工單至 Google Sheets"""
-    gc = get_gsheet_client()
-    if not gc: return
-    try:
-        sh = gc.open_by_key(st.secrets["GSHEET_ID"])
-        worksheet = sh.worksheet("work_orders")
-        row_values = [str(row_dict.get(col, "")) for col in STANDARD_COLS]
-        worksheet.append_row(row_values)
-        
-        # 觸發本機備份
-        df = load_work_orders()
-        df.to_csv(DB_FILE, index=False, encoding='utf-8-sig')
-    except Exception as e:
-        st.error(f"新增工單失敗: {e}")
-
-def load_employees():
-    """從 Google Sheets 讀取員工名單"""
+def load_employees_raw():
+    """從 Google Sheets 讀取最新員工名單 (僅在新增/刪除員工時呼叫)"""
     gc = get_gsheet_client()
     if not gc: return DEFAULT_EMPS
     try:
@@ -264,7 +223,6 @@ def load_employees():
         emps = df["員工名字"].dropna().astype(str).str.strip().tolist()
         emps = list(dict.fromkeys([e for e in emps if e]))
         
-        # 檢查是否缺少預設名單
         missing = [e for e in DEFAULT_EMPS if e not in emps]
         if missing:
             emps.extend(missing)
@@ -274,8 +232,61 @@ def load_employees():
     except Exception as e:
         return DEFAULT_EMPS
 
+# --- 資料讀取區 (快取版 Cache) ---
+@st.cache_data(ttl=30)
+def load_work_orders_cached():
+    return load_work_orders_raw()
+
+@st.cache_data(ttl=60)
+def load_employees_cached():
+    return load_employees_raw()
+
+# --- 資料寫入區 ---
+def save_work_orders(df):
+    """將工單資料覆蓋寫入 Google Sheets，並清除快取"""
+    # 注意：目前仍為整表覆寫。
+    # 所有修改動作都必須先重新 load_work_orders_raw()，再用工單ID修改最新資料，避免覆蓋其他人的操作。
+    # 未來可升級成只更新指定列。
+    gc = get_gsheet_client()
+    if not gc: return
+    try:
+        sh = gc.open_by_key(st.secrets["GSHEET_ID"])
+        worksheet = sh.worksheet("work_orders")
+        
+        for c in STANDARD_COLS:
+            if c not in df.columns:
+                df[c] = ""
+        df = df[STANDARD_COLS]
+        df = df.fillna("")
+        
+        worksheet.clear()
+        worksheet.update(values=[df.columns.values.tolist()] + df.values.tolist(), range_name='A1')
+        
+        # 同步備份到本機 CSV
+        df.to_csv(DB_FILE, index=False, encoding='utf-8-sig')
+        
+        # 寫入成功後清除快取，讓所有頁面抓到最新資料
+        st.cache_data.clear()
+    except Exception as e:
+        st.error(f"寫入 work_orders 失敗: {e}")
+
+def append_work_order(row_dict):
+    """快速新增一筆工單至 Google Sheets，並清除快取"""
+    gc = get_gsheet_client()
+    if not gc: return
+    try:
+        sh = gc.open_by_key(st.secrets["GSHEET_ID"])
+        worksheet = sh.worksheet("work_orders")
+        row_values = [str(row_dict.get(col, "")) for col in STANDARD_COLS]
+        worksheet.append_row(row_values)
+        
+        # 備註：為降低 429 發生率，新增時不再立即抓取全表備份到本機 CSV
+        st.cache_data.clear() # 寫入成功後清除快取
+    except Exception as e:
+        st.error(f"新增工單失敗: {e}")
+
 def save_employees_to_sheet(emp_list):
-    """更新員工名單至 Google Sheets"""
+    """更新員工名單至 Google Sheets，並清除快取"""
     gc = get_gsheet_client()
     if not gc: return
     try:
@@ -283,12 +294,13 @@ def save_employees_to_sheet(emp_list):
         worksheet = sh.worksheet("employees")
         worksheet.clear()
         worksheet.update(values=[["員工名字"]] + [[e] for e in emp_list], range_name='A1')
+        st.cache_data.clear() # 寫入成功後清除快取
     except Exception as e:
         st.error(f"更新員工名單失敗: {e}")
 
 def backup_factory_db():
-    """主管操作前的獨立備份"""
-    df = load_work_orders()
+    """主管操作前的獨立備份 (強制讀取最新資料)"""
+    df = load_work_orders_raw()
     backup_dir = "backup"
     if not os.path.exists(backup_dir):
         os.makedirs(backup_dir)
@@ -328,7 +340,8 @@ def send_line_message(msg):
 
 def send_unfinished_work_orders_reminder(trigger_label="定時檢查"):
     try:
-        df = load_work_orders()
+        # 背景作業為了準確性，採用 Raw 資料
+        df = load_work_orders_raw()
         if df.empty: return
         unfinished_df = df[df['狀態'].isin(['進行中', '暫停中'])]
         
@@ -439,8 +452,8 @@ def init_scheduler():
     scheduler.start()
     return scheduler
 
-# 啟動時自動初始化 Google Sheets
-init_gsheets()
+# 啟動時自動初始化 Google Sheets (只執行一次)
+init_gsheets_once()
 init_scheduler()
 
 # --- 3. 網頁 UI 介面 ---
@@ -474,11 +487,10 @@ with st.sidebar:
         if not is_print_mode:
             st.divider()
             with st.expander("👤 人員名單維護"):
-                # 這裡僅供顯示，按下按鈕時再即時重抓確保最新
-                current_list_disp = load_employees()
+                current_list_disp = load_employees_cached()
                 new_emp = st.text_input("新增員工姓名").strip()
                 if st.button("確認新增"):
-                    latest_emps = load_employees()
+                    latest_emps = load_employees_raw()
                     if not new_emp:
                         st.warning("請輸入姓名。")
                     elif new_emp in latest_emps:
@@ -514,7 +526,10 @@ with st.sidebar:
     else:
         st.info("🔒 系統設定需主管密碼")
 
+# 集中讀取快取資料給各頁籤共用 (減少 API 讀取次數)
 if not is_print_mode:
+    emps_cached = load_employees_cached()
+    db_df_cached = load_work_orders_cached()
     tab1, tab2, tab3, tab4 = st.tabs(["🏗️ 磨床報工", "⚡ 放電機/快走絲報工", "📊 主管數據看板", "🛠️ 主管後台管理"])
 else:
     tab1, tab2, tab3, tab4 = st.empty(), st.empty(), st.container(), st.empty()
@@ -523,8 +538,8 @@ else:
 if not is_print_mode:
     with tab1:
         st.header("磨床即時加工報工 / Báo cáo gia công máy mài")
-        emps = load_employees()
-        db_df = load_work_orders()
+        emps = emps_cached
+        db_df = db_df_cached
         
         st.subheader("🆕 開始新工單 / Bắt đầu lệnh sản xuất mới")
         with st.container(border=True):
@@ -599,8 +614,8 @@ if not is_print_mode:
                     st.markdown("### ⏸️ 暫停加工 / Tạm dừng gia công")
                     p_reason = st.selectbox("暫停原因 / Lý do tạm dừng", PAUSE_REASONS, format_func=lambda x: PAUSE_REASONS_BILINGUAL.get(x, x), key=f"pr_{row['工單ID']}")
                     if st.button("⏸️ 暫停加工 / Tạm dừng", key=f"pb_{row['工單ID']}"):
-                        # 即時抓取最新資料防止覆蓋衝突
-                        current_db = load_work_orders()
+                        # 寫入前抓取 Raw 資料
+                        current_db = load_work_orders_raw()
                         mask = (current_db['工單ID'] == row['工單ID']) & (current_db['狀態'] == '進行中')
                         if not current_db[mask].empty:
                             pause_now = datetime.now(TAIWAN_TZ)
@@ -630,8 +645,8 @@ if not is_print_mode:
                         if row['生產類型'] != "正常生產" and not e_note.strip():
                             st.error("❌ 異常件請務必填寫備註原因！ / Vui lòng điền lý do bất thường!")
                         else:
-                            # 即時抓取最新資料防止覆蓋衝突
-                            current_db = load_work_orders()
+                            # 寫入前抓取 Raw 資料
+                            current_db = load_work_orders_raw()
                             mask = (current_db['工單ID'] == row['工單ID']) & (current_db['狀態'] == '進行中')
                             if not current_db[mask].empty:
                                 end_now = datetime.now(TAIWAN_TZ)
@@ -695,8 +710,8 @@ if not is_print_mode:
                     with col_p2:
                         st.write("") 
                         if st.button("▶️ 繼續加工 / Tiếp tục", key=f"r_btn_{row['工單ID']}", type="primary", use_container_width=True):
-                            # 即時抓取最新資料防止覆蓋衝突
-                            current_db = load_work_orders()
+                            # 寫入前抓取 Raw 資料
+                            current_db = load_work_orders_raw()
                             mask = (current_db['工單ID'] == row['工單ID']) & (current_db['狀態'] == '暫停中')
                             if not current_db[mask].empty:
                                 resume_now = datetime.now(TAIWAN_TZ)
@@ -711,8 +726,8 @@ if not is_print_mode:
 if not is_print_mode:
     with tab2:
         st.header("放電機/快走絲報工 / Báo cáo máy EDM / máy cắt dây nhanh")
-        emps = load_employees()
-        db_df = load_work_orders()
+        emps = emps_cached
+        db_df = db_df_cached
         
         st.subheader("🆕 開始新工單 / Bắt đầu lệnh sản xuất mới")
         with st.container(border=True):
@@ -787,8 +802,8 @@ if not is_print_mode:
                     st.markdown("### ⏸️ 暫停加工 / Tạm dừng gia công")
                     p_reason_ew = st.selectbox("暫停原因 / Lý do tạm dừng", PAUSE_REASONS, format_func=lambda x: PAUSE_REASONS_BILINGUAL.get(x, x), key=f"pr_ew_{row['工單ID']}")
                     if st.button("⏸️ 暫停加工 / Tạm dừng", key=f"pb_ew_{row['工單ID']}"):
-                        # 即時抓取最新資料防止覆蓋衝突
-                        current_db = load_work_orders()
+                        # 寫入前抓取 Raw 資料
+                        current_db = load_work_orders_raw()
                         mask = (current_db['工單ID'] == row['工單ID']) & (current_db['狀態'] == '進行中')
                         if not current_db[mask].empty:
                             pause_now = datetime.now(TAIWAN_TZ)
@@ -828,8 +843,8 @@ if not is_print_mode:
                         elif row['生產類型'] != "正常生產" and not e_note_ew.strip():
                             st.error("❌ 異常件請務必填寫備註原因！ / Vui lòng điền lý do bất thường!")
                         else:
-                            # 即時抓取最新資料防止覆蓋衝突
-                            current_db = load_work_orders()
+                            # 寫入前抓取 Raw 資料
+                            current_db = load_work_orders_raw()
                             mask = (current_db['工單ID'] == row['工單ID']) & (current_db['狀態'] == '進行中')
                             if not current_db[mask].empty:
                                 diff_time_ew = round(final_machine_h - e_act_ew, 2)
@@ -892,8 +907,8 @@ if not is_print_mode:
                     with col_p2:
                         st.write("") 
                         if st.button("▶️ 繼續加工 / Tiếp tục", key=f"r_btn_ew_{row['工單ID']}", type="primary", use_container_width=True):
-                            # 即時抓取最新資料防止覆蓋衝突
-                            current_db = load_work_orders()
+                            # 寫入前抓取 Raw 資料
+                            current_db = load_work_orders_raw()
                             mask = (current_db['工單ID'] == row['工單ID']) & (current_db['狀態'] == '暫停中')
                             if not current_db[mask].empty:
                                 resume_now = datetime.now(TAIWAN_TZ)
@@ -908,11 +923,11 @@ if not is_print_mode:
 with tab3:
     if st.session_state["is_admin"]:
         if is_print_mode:
-            st.markdown(f"<h1 style='text-align: center;'>工廠生產管理月報表 (V4.8) - {datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d')}</h1>", unsafe_allow_html=True)
+            st.markdown(f"<h1 style='text-align: center;'>工廠生產管理月報表 (V5) - {datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d')}</h1>", unsafe_allow_html=True)
+            full_df = load_work_orders_cached()
         else:
-            st.title("📊 生產數據看板 (V4.8)")
-
-        full_df = load_work_orders()
+            st.title("📊 生產數據看板 (V5)")
+            full_df = db_df_cached
         
         if full_df.empty:
             st.info("尚未有有效工單資料。請先到「現場報工填寫」新增工單。")
@@ -938,7 +953,7 @@ with tab3:
                 with st.container(border=not is_print_mode):
                     c1, c2, c3, c4, c5, c6 = st.columns([1.5, 2, 2, 2, 2, 2])
                     with c1: v_mode = st.radio("檢視模式", ["整體", "個人"], horizontal=True)
-                    with c2: s_emp = st.selectbox("員工篩選", load_employees(), disabled=(v_mode=="整體"))
+                    with c2: s_emp = st.selectbox("員工篩選", load_employees_cached(), disabled=(v_mode=="整體"))
                     with c3: d_range = st.date_input("日期區間", [full_df['日期_date'].min(), full_df['日期_date'].max()])
                     with c4: s_status = st.selectbox("工單狀態", ["已完成", "進行中", "暫停中", "全部"])
                     with c5: s_type = st.selectbox("生產類型篩選", ["全部"] + PROD_TYPES)
@@ -1051,7 +1066,7 @@ if not is_print_mode:
             # --- 人員名單管理 ---
             st.subheader("👤 人員名單管理")
             with st.container(border=True):
-                admin_emps = load_employees()
+                admin_emps = load_employees_cached()
                 st.write("**目前系統人員名單：**")
                 st.dataframe(pd.DataFrame({"員工名字": admin_emps}), use_container_width=True)
                 
@@ -1065,8 +1080,8 @@ if not is_print_mode:
                     elif not del_emp_confirm:
                         st.error("❌ 請勾選確認核取方塊。")
                     else:
-                        # 從 Google Sheets 重新抓取最新名單再覆寫防止衝突
-                        current_emps = load_employees()
+                        # 寫入前抓取 Raw 資料
+                        current_emps = load_employees_raw()
                         new_emps = [e for e in current_emps if e != del_emp]
                         save_employees_to_sheet(new_emps)
                         st.success(f"✅ 已移除：{del_emp}。 (注意：歷史工單紀錄仍保留)")
@@ -1074,7 +1089,7 @@ if not is_print_mode:
 
             st.divider()
 
-            admin_db = load_work_orders()
+            admin_db = db_df_cached
             
             # --- 工單資料修正 ---
             st.subheader("📝 工單資料修正")
@@ -1099,7 +1114,7 @@ if not is_print_mode:
                             admin_d_range = []
                             
                     with col_f2:
-                        all_emp_names = sorted(set(e for e in (load_employees() + admin_db["填寫人"].dropna().astype(str).tolist()) if e.strip()))
+                        all_emp_names = sorted(set(e for e in (load_employees_cached() + admin_db["填寫人"].dropna().astype(str).tolist()) if e.strip()))
                         admin_s_emp = st.selectbox("填寫人", ["全部"] + all_emp_names, key="admin_s_emp")
                         
                     with col_f3: admin_s_status = st.selectbox("工單狀態", ["全部", "進行中", "暫停中", "已完成"], key="admin_s_status")
@@ -1155,8 +1170,8 @@ if not is_print_mode:
                             if edit_confirm:
                                 backup_path = backup_factory_db()
                                 
-                                # 即時抓取最新資料防止覆蓋衝突
-                                latest_db = load_work_orders()
+                                # 寫入前抓取 Raw 資料
+                                latest_db = load_work_orders_raw()
                                 mask = latest_db['工單ID'] == edit_wo_id
                                 if not latest_db[mask].empty:
                                     latest_db.loc[mask, '填寫人'] = new_emp
@@ -1218,8 +1233,8 @@ if not is_print_mode:
                                 else:
                                     backup_path = backup_factory_db()
                                     
-                                    # 即時抓取最新資料防止覆蓋衝突
-                                    latest_db = load_work_orders()
+                                    # 寫入前抓取 Raw 資料
+                                    latest_db = load_work_orders_raw()
                                     latest_db = latest_db[~latest_db['工單ID'].isin(del_wo_ids)]
                                     
                                     save_work_orders(latest_db)
