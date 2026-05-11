@@ -10,7 +10,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 # --- 0. Streamlit 頁面設定 (必須在最前面) ---
-st.set_page_config(page_title="工廠生產管理系統 V4.6", layout="wide")
+st.set_page_config(page_title="工廠生產管理系統 V4.7", layout="wide")
 
 # --- 1. 系統常數、密碼與時區設定 ---
 TAIWAN_TZ = ZoneInfo("Asia/Taipei")
@@ -29,7 +29,7 @@ MACHINE_TYPES_BILINGUAL = {
     "快走絲": "快走絲 / Máy cắt dây nhanh"
 }
 
-# 生產類型與中越對照表
+# 生產類型與中越對照表 (統一越南文用詞)
 PROD_TYPES = ["正常生產", "插件", "NG重修", "重製"]
 PROD_TYPES_BILINGUAL = {
     "正常生產": "正常生產 / Sản xuất bình thường",
@@ -38,7 +38,7 @@ PROD_TYPES_BILINGUAL = {
     "重製": "重製 / Làm lại"
 }
 
-# 暫停原因與中越對照表
+# 暫停原因與中越對照表 (統一越南文用詞)
 PAUSE_REASONS = ["下班未完成", "臨時插件", "等料", "等主管確認", "機台異常", "其他"]
 PAUSE_REASONS_BILINGUAL = {
     "下班未完成": "下班未完成 / Tan ca nhưng chưa hoàn thành",
@@ -52,9 +52,9 @@ PAUSE_REASONS_BILINGUAL = {
 # 主管密碼設定
 ADMIN_PASSWORD = "0000"
 
-# STANDARD_COLS 標準欄位定義 (新增機台類型)
+# STANDARD_COLS 標準欄位定義 (包含工單號碼)
 STANDARD_COLS = [
-    '工單ID', '日期', '填寫人', '生產類型', '機台類型', '圖號', '工件數量', '預估工時',
+    '工單ID', '日期', '填寫人', '生產類型', '機台類型', '工單號碼', '圖號', '工件數量', '預估工時',
     '實際工時', '開始時間', '結束時間', '工作區間工時',
     '累積工作區間工時', '最後恢復時間', '暫停時間', '暫停原因',
     '時間差異', '狀態', '備註'
@@ -75,6 +75,7 @@ except Exception:
 # --- 2. 核心功能函式 ---
 
 def normalize_db_df(df):
+    """資料表型態保護，確保數字欄位與字串欄位正確"""
     num_cols = ['工件數量', '預估工時', '實際工時', '工作區間工時', '累積工作區間工時', '時間差異']
     for c in df.columns:
         if c in num_cols:
@@ -87,6 +88,7 @@ def normalize_db_df(df):
     return df
 
 def parse_taiwan_time(value):
+    """時間解析核心邏輯：支援多種格式並穩定轉換為台灣時區"""
     try:
         if pd.isna(value) or str(value).strip() == "":
             return pd.NaT
@@ -101,18 +103,23 @@ def parse_taiwan_time(value):
         return pd.NaT
 
 def backup_factory_db():
+    """自動備份 CSV 資料庫函式"""
     if not os.path.exists(DB_FILE):
         return None
+    
     backup_dir = "backup"
     if not os.path.exists(backup_dir):
         os.makedirs(backup_dir)
+        
     now_str = datetime.now(TAIWAN_TZ).strftime('%Y%m%d_%H%M%S')
     backup_filename = f"factory_db_backup_{now_str}.csv"
     backup_path = os.path.join(backup_dir, backup_filename)
+    
     shutil.copy(DB_FILE, backup_path)
     return backup_path
 
 def init_files():
+    """初始化並整理舊資料欄位遷移與新欄位補齊，及確保人員名單完整"""
     if not os.path.exists(SETTING_FILE):
         pd.DataFrame({"員工名字": DEFAULT_EMPS}).to_csv(SETTING_FILE, index=False)
     else:
@@ -178,6 +185,7 @@ def get_diff_color(x):
     else: return "gray"
 
 def send_line_message(msg):
+    """使用 LINE Messaging API 發送通知，並回傳詳細結果"""
     if not LINE_CHANNEL_ACCESS_TOKEN:
         return False, "LINE_CHANNEL_ACCESS_TOKEN 尚未設定"
     if not LINE_TO_ID:
@@ -202,6 +210,7 @@ def send_line_message(msg):
         return False, f"LINE 發送例外錯誤：{e}"
 
 def send_unfinished_work_orders_reminder(trigger_label="定時檢查"):
+    """定時檢查與推播未結案工單"""
     try:
         if not os.path.exists(DB_FILE):
             return
@@ -240,6 +249,8 @@ def send_unfinished_work_orders_reminder(trigger_label="定時檢查"):
             for _, row in unfinished_df.iterrows():
                 status = row['狀態']
                 machine = row.get('機台類型', '磨床')
+                wo_no = row.get('工單號碼', '')
+                wo_no_str = wo_no if wo_no else '未填寫'
                 
                 if status == '進行中':
                     resume_dt = parse_taiwan_time(row.get('最後恢復時間', ''))
@@ -260,6 +271,7 @@ def send_unfinished_work_orders_reminder(trigger_label="定時檢查"):
                             f"   機台：{machine}\n"
                             f"   狀態：{status}\n"
                             f"   類型：{row['生產類型']}\n"
+                            f"   工單號碼：{wo_no_str}\n"
                             f"   圖號：{row['圖號']}\n"
                             f"   數量：{row.get('工件數量', 1)}\n"
                             f"   開始時間：{row['開始時間']}\n"
@@ -275,6 +287,7 @@ def send_unfinished_work_orders_reminder(trigger_label="定時檢查"):
                             f"   機台：{machine}\n"
                             f"   狀態：{status}\n"
                             f"   類型：{row['生產類型']}\n"
+                            f"   工單號碼：{wo_no_str}\n"
                             f"   圖號：{row['圖號']}\n"
                             f"   數量：{row.get('工件數量', 1)}\n"
                             f"   開始時間：{row['開始時間']}\n"
@@ -400,9 +413,10 @@ if not is_print_mode:
                 s_name = st.selectbox("填寫人 / Người điền", emps, key="g_name")
                 s_type = st.selectbox("生產類型 / Loại sản xuất", PROD_TYPES, format_func=lambda x: PROD_TYPES_BILINGUAL.get(x, x), key="g_type")
             with col_s2:
-                s_drawing = st.text_input("圖號 / Bản vẽ / Số lệnh", key="g_drawing").strip()
-                s_qty = st.number_input("工件數量 / Số lượng sản phẩm", min_value=1, value=1, step=1, key="g_qty")
+                g_work_order_no = st.text_input("工單號碼 / Số lệnh sản xuất", key="g_wo_no").strip()
+                s_drawing = st.text_input("圖號 / Bản vẽ", key="g_drawing").strip()
             with col_s3:
+                s_qty = st.number_input("工件數量 / Số lượng sản phẩm", min_value=1, value=1, step=1, key="g_qty")
                 s_est = st.number_input("預估工時 / TG dự kiến (hrs)", min_value=0.0, step=0.1, key="g_est")
             
             if st.button("▶️ 開始加工 / Bắt đầu gia công", type="primary", key="g_start"):
@@ -414,7 +428,7 @@ if not is_print_mode:
                     wo_id = f"WO-{now.strftime('%Y%m%d%H%M%S%f')}"
                     new_entry = {
                         '工單ID': wo_id, '日期': now.strftime("%Y-%m-%d"), '填寫人': s_name,
-                        '生產類型': s_type, '機台類型': '磨床', '圖號': s_drawing, '工件數量': s_qty, '預估工時': s_est,
+                        '生產類型': s_type, '機台類型': '磨床', '工單號碼': g_work_order_no, '圖號': s_drawing, '工件數量': s_qty, '預估工時': s_est,
                         '實際工時': 0.0, '開始時間': now_str,
                         '結束時間': "", '工作區間工時': 0.0,
                         '累積工作區間工時': 0.0, '最後恢復時間': now_str, '暫停時間': "", '暫停原因': "",
@@ -434,7 +448,9 @@ if not is_print_mode:
             st.info(f"目前沒有 {filter_ongoing if filter_ongoing != '全部' else ''} 正在進行的工單。")
         else:
             for index, row in ongoing_df.iterrows():
-                with st.expander(f"🛠️ {row['填寫人']} | {row['機台類型']} - {row['圖號']} ({row['生產類型']}) - 開始於 {row['開始時間']}"):
+                wo_no_disp = row.get('工單號碼', '')
+                expander_title = f"🛠️ {row['填寫人']} | {row.get('機台類型', '磨床')} | 工單號碼：{wo_no_disp if wo_no_disp else '未填寫'} | 圖號：{row['圖號']} ({row['生產類型']}) - 開始於 {row['開始時間']}"
+                with st.expander(expander_title):
                     
                     resume_dt = parse_taiwan_time(row.get('最後恢復時間', ''))
                     if pd.isna(resume_dt):
@@ -451,7 +467,9 @@ if not is_print_mode:
                     if pd.isna(old_acc): old_acc = 0.0
                     current_total_h = round(old_acc + segment_h, 2)
                     
-                    st.write(f"**工單ID:** `{row['工單ID']}`")
+                    st.write(f"**工單號碼 / Số lệnh sản xuất:** {wo_no_disp if wo_no_disp else '未填寫'}")
+                    st.write(f"**圖號 / Bản vẽ:** {row['圖號']}")
+                    st.caption(f"系統ID: `{row['工單ID']}`")
                     st.write(f"**工件數量 / Số lượng sản phẩm:** {row.get('工件數量', 1)}")
                     st.info(f"⏱️ 系統累積工作區間工時: {current_total_h} 小時")
                     
@@ -517,9 +535,10 @@ if not is_print_mode:
                                 if row['生產類型'] != "正常生產":
                                     line_ok, line_error = send_line_message(
                                         f"\n⚠️異常結案通知\n"
-                                        f"機台：{row['機台類型']}\n"
+                                        f"機台：{row.get('機台類型', '磨床')}\n"
                                         f"類型：{row['生產類型']}\n"
                                         f"人員：{row['填寫人']}\n"
+                                        f"工單號碼：{row.get('工單號碼', '')}\n"
                                         f"圖號：{row['圖號']}\n"
                                         f"數量：{row.get('工件數量', 1)}\n"
                                         f"實際加工：{e_act}h\n"
@@ -549,9 +568,11 @@ if not is_print_mode:
                 with st.container(border=True):
                     col_p1, col_p2 = st.columns([3, 1])
                     with col_p1:
-                        st.write(f"**工單ID:** `{row['工單ID']}` | **人員:** {row['填寫人']}")
-                        st.write(f"**圖號:** {row['圖號']} ({row['生產類型']}) | **開始於:** {row['開始時間']}")
-                        st.write(f"**工件數量 / Số lượng sản phẩm:** {row.get('工件數量', 1)}")
+                        wo_no_disp = row.get('工單號碼', '')
+                        st.write(f"**工單號碼 / Số lệnh sản xuất:** {wo_no_disp if wo_no_disp else '未填寫'}")
+                        st.write(f"**圖號 / Bản vẽ:** {row['圖號']} ({row['生產類型']}) | **人員:** {row['填寫人']}")
+                        st.caption(f"系統ID: `{row['工單ID']}` | **機台:** {row.get('機台類型', '磨床')}")
+                        st.write(f"**開始於:** {row['開始時間']} | **工件數量:** {row.get('工件數量', 1)}")
                         st.error(f"⏸️ 暫停原因: {PAUSE_REASONS_BILINGUAL.get(row.get('暫停原因', ''), row.get('暫停原因', '未填寫'))} (於 {row.get('暫停時間', '')})")
                         st.info(f"⏱️ 累積工作區間工時: {row.get('累積工作區間工時', 0.0)} 小時")
                     with col_p2:
@@ -586,8 +607,9 @@ if not is_print_mode:
                 ew_machine = st.selectbox("機台類型 / Loại máy", ["放電機", "快走絲"], format_func=lambda x: MACHINE_TYPES_BILINGUAL.get(x, x), key="ew_machine")
             with col_ew2:
                 ew_type = st.selectbox("生產類型 / Loại sản xuất", PROD_TYPES, format_func=lambda x: PROD_TYPES_BILINGUAL.get(x, x), key="ew_type")
-                ew_drawing = st.text_input("圖號 / Bản vẽ / Số lệnh", key="ew_drawing").strip()
+                ew_work_order_no = st.text_input("工單號碼 / Số lệnh sản xuất", key="ew_wo_no").strip()
             with col_ew3:
+                ew_drawing = st.text_input("圖號 / Bản vẽ", key="ew_drawing").strip()
                 ew_qty = st.number_input("工件數量 / Số lượng sản phẩm", min_value=1, value=1, step=1, key="ew_qty")
                 ew_est = st.number_input("預估機台工時 / Thời gian máy dự kiến (hrs)", min_value=0.0, step=0.1, key="ew_est")
             
@@ -600,7 +622,7 @@ if not is_print_mode:
                     wo_id = f"WO-{now.strftime('%Y%m%d%H%M%S%f')}"
                     new_entry = {
                         '工單ID': wo_id, '日期': now.strftime("%Y-%m-%d"), '填寫人': ew_name,
-                        '生產類型': ew_type, '機台類型': ew_machine, '圖號': ew_drawing, '工件數量': ew_qty, '預估工時': ew_est,
+                        '生產類型': ew_type, '機台類型': ew_machine, '工單號碼': ew_work_order_no, '圖號': ew_drawing, '工件數量': ew_qty, '預估工時': ew_est,
                         '實際工時': 0.0, '開始時間': now_str,
                         '結束時間': "", '工作區間工時': 0.0,
                         '累積工作區間工時': 0.0, '最後恢復時間': now_str, '暫停時間': "", '暫停原因': "",
@@ -621,7 +643,9 @@ if not is_print_mode:
         else:
             now_tz = datetime.now(TAIWAN_TZ)
             for index, row in ongoing_df_ew.iterrows():
-                with st.expander(f"🛠️ {row['填寫人']} | {row['機台類型']} - {row['圖號']} ({row['生產類型']}) - 開始於 {row['開始時間']}"):
+                wo_no_disp = row.get('工單號碼', '')
+                expander_title = f"🛠️ {row['填寫人']} | {row.get('機台類型', '')} | 工單號碼：{wo_no_disp if wo_no_disp else '未填寫'} | 圖號：{row['圖號']} ({row['生產類型']}) - 開始於 {row['開始時間']}"
+                with st.expander(expander_title):
                     
                     start_dt = parse_taiwan_time(row['開始時間'])
                     resume_dt = parse_taiwan_time(row.get('最後恢復時間', ''))
@@ -636,7 +660,9 @@ if not is_print_mode:
                     if pd.isna(old_acc): old_acc = 0.0
                     current_total_now = round(old_acc + max(0.0, segment_h_now), 2)
                     
-                    st.write(f"**工單ID:** `{row['工單ID']}`")
+                    st.write(f"**工單號碼 / Số lệnh sản xuất:** {wo_no_disp if wo_no_disp else '未填寫'}")
+                    st.write(f"**圖號 / Bản vẽ:** {row['圖號']}")
+                    st.caption(f"系統ID: `{row['工單ID']}`")
                     st.write(f"**工件數量 / Số lượng sản phẩm:** {row.get('工件數量', 1)}")
                     st.info(f"⏱️ 系統目前累積工作區間 (機台運轉) 工時: {current_total_now} 小時")
                     
@@ -711,9 +737,10 @@ if not is_print_mode:
                                 if row['生產類型'] != "正常生產":
                                     line_ok, line_error = send_line_message(
                                         f"\n⚠️異常結案通知\n"
-                                        f"機台：{row['機台類型']}\n"
+                                        f"機台：{row.get('機台類型', '')}\n"
                                         f"類型：{row['生產類型']}\n"
                                         f"人員：{row['填寫人']}\n"
+                                        f"工單號碼：{row.get('工單號碼', '')}\n"
                                         f"圖號：{row['圖號']}\n"
                                         f"數量：{row.get('工件數量', 1)}\n"
                                         f"機台停止時間：{end_dt.strftime('%Y-%m-%d %H:%M:%S')}\n"
@@ -743,9 +770,11 @@ if not is_print_mode:
                 with st.container(border=True):
                     col_p1, col_p2 = st.columns([3, 1])
                     with col_p1:
-                        st.write(f"**工單ID:** `{row['工單ID']}` | **人員:** {row['填寫人']}")
-                        st.write(f"**圖號:** {row['圖號']} ({row['機台類型']} - {row['生產類型']}) | **開始於:** {row['開始時間']}")
-                        st.write(f"**工件數量 / Số lượng sản phẩm:** {row.get('工件數量', 1)}")
+                        wo_no_disp = row.get('工單號碼', '')
+                        st.write(f"**工單號碼 / Số lệnh sản xuất:** {wo_no_disp if wo_no_disp else '未填寫'}")
+                        st.write(f"**圖號:** {row['圖號']} ({row['生產類型']}) | **人員:** {row['填寫人']}")
+                        st.caption(f"系統ID: `{row['工單ID']}` | **機台:** {row.get('機台類型', '')}")
+                        st.write(f"**開始於:** {row['開始時間']} | **工件數量:** {row.get('工件數量', 1)}")
                         st.error(f"⏸️ 暫停原因: {PAUSE_REASONS_BILINGUAL.get(row.get('暫停原因', ''), row.get('暫停原因', '未填寫'))} (於 {row.get('暫停時間', '')})")
                         st.info(f"⏱️ 累積機台工作區間工時: {row.get('累積工作區間工時', 0.0)} 小時")
                     with col_p2:
@@ -769,9 +798,9 @@ if not is_print_mode:
 with tab3:
     if st.session_state["is_admin"]:
         if is_print_mode:
-            st.markdown(f"<h1 style='text-align: center;'>工廠生產管理月報表 (V4.6) - {datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d')}</h1>", unsafe_allow_html=True)
+            st.markdown(f"<h1 style='text-align: center;'>工廠生產管理月報表 (V4.7) - {datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d')}</h1>", unsafe_allow_html=True)
         else:
-            st.title("📊 生產數據看板 (V4.6)")
+            st.title("📊 生產數據看板 (V4.7)")
 
         if os.path.exists(DB_FILE):
             full_df = normalize_db_df(pd.read_csv(DB_FILE))
@@ -828,7 +857,7 @@ with tab3:
 
                     if not pause_df.empty and not is_print_mode:
                         st.warning("⏸️ 目前有暫停中工單，請確認是否為下班未完成、臨時插件、等料或其他原因。")
-                        show_cols = ['工單ID', '機台類型', '填寫人', '生產類型', '圖號', '工件數量', '開始時間', '暫停時間', '暫停原因', '累積工作區間工時']
+                        show_cols = ['工單ID', '機台類型', '填寫人', '生產類型', '工單號碼', '圖號', '工件數量', '開始時間', '暫停時間', '暫停原因', '累積工作區間工時']
                         st.dataframe(pause_df[[c for c in show_cols if c in pause_df.columns]], use_container_width=True)
 
                     with st.container(border=True):
@@ -884,7 +913,8 @@ with tab3:
                         st.dataframe(pd.concat([sum_df, pivot_df], axis=1).style.format(format_dict), use_container_width=True)
 
                     st.write("### 🔍 詳細生產紀錄清單")
-                    show_df = f_df[[c for c in STANDARD_COLS if c in f_df.columns]]
+                    show_cols_db = ['工單ID', '日期', '填寫人', '生產類型', '機台類型', '工單號碼', '圖號', '工件數量', '預估工時', '實際工時', '開始時間', '結束時間', '工作區間工時', '累積工作區間工時', '暫停原因', '時間差異', '狀態', '備註']
+                    show_df = f_df[[c for c in show_cols_db if c in f_df.columns]]
                     st.dataframe(show_df, use_container_width=True)
                     
                     if not is_print_mode:
@@ -961,7 +991,7 @@ if not is_print_mode:
                         with col_f3: admin_s_status = st.selectbox("工單狀態", ["全部", "進行中", "暫停中", "已完成"], key="admin_s_status")
                         with col_f4: admin_s_type = st.selectbox("生產類型", ["全部"] + PROD_TYPES, key="admin_s_type")
                         with col_f5: admin_s_machine = st.selectbox("機台類型", ["全部"] + MACHINE_TYPES, key="admin_s_machine")
-                        with col_f6: admin_s_kw = st.text_input("圖號關鍵字搜尋", key="admin_s_kw").strip()
+                        with col_f6: admin_s_kw = st.text_input("工單號碼 / 圖號 關鍵字搜尋", key="admin_s_kw").strip()
 
                         edit_df = admin_db.copy()
                         if isinstance(admin_d_range, (list, tuple)) and len(admin_d_range) == 2:
@@ -970,7 +1000,11 @@ if not is_print_mode:
                         if admin_s_status != "全部": edit_df = edit_df[edit_df['狀態'] == admin_s_status]
                         if admin_s_type != "全部": edit_df = edit_df[edit_df['生產類型'] == admin_s_type]
                         if admin_s_machine != "全部": edit_df = edit_df[edit_df['機台類型'] == admin_s_machine]
-                        if admin_s_kw: edit_df = edit_df[edit_df['圖號'].astype(str).str.contains(admin_s_kw, na=False)]
+                        if admin_s_kw: 
+                            edit_df = edit_df[
+                                edit_df['圖號'].astype(str).str.contains(admin_s_kw, na=False) |
+                                edit_df['工單號碼'].astype(str).str.contains(admin_s_kw, na=False)
+                            ]
                         
                         st.write(f"篩選結果：共 {len(edit_df)} 筆")
                         st.dataframe(edit_df[[c for c in STANDARD_COLS if c in edit_df.columns]], height=200)
@@ -987,6 +1021,7 @@ if not is_print_mode:
                                 new_emp = st.text_input("填寫人", value=str(wo_data.get('填寫人', '')))
                                 new_type = st.selectbox("生產類型", PROD_TYPES, index=PROD_TYPES.index(wo_data.get('生產類型', '正常生產')) if wo_data.get('生產類型', '正常生產') in PROD_TYPES else 0, key="ed_type")
                                 new_machine = st.selectbox("機台類型", MACHINE_TYPES, index=MACHINE_TYPES.index(wo_data.get('機台類型', '磨床')) if wo_data.get('機台類型', '磨床') in MACHINE_TYPES else 0, key="ed_machine")
+                                new_work_order_no = st.text_input("工單號碼", value=str(wo_data.get('工單號碼', '')))
                                 new_drawing = st.text_input("圖號", value=str(wo_data.get('圖號', '')))
                                 new_qty = st.number_input("工件數量", value=int(wo_data.get('工件數量', 1)), step=1, min_value=1)
                                 new_status = st.selectbox("狀態", ["進行中", "暫停中", "已完成"], index=["進行中", "暫停中", "已完成"].index(wo_data.get('狀態', '已完成')) if wo_data.get('狀態', '已完成') in ["進行中", "暫停中", "已完成"] else 2, key="ed_status")
@@ -1009,6 +1044,7 @@ if not is_print_mode:
                                     admin_db.loc[mask, '填寫人'] = new_emp
                                     admin_db.loc[mask, '生產類型'] = new_type
                                     admin_db.loc[mask, '機台類型'] = new_machine
+                                    admin_db.loc[mask, '工單號碼'] = new_work_order_no
                                     admin_db.loc[mask, '圖號'] = new_drawing
                                     admin_db.loc[mask, '工件數量'] = new_qty
                                     admin_db.loc[mask, '預估工時'] = new_est
@@ -1042,7 +1078,12 @@ if not is_print_mode:
                 else:
                     with st.container(border=True):
                         st.warning("⚠️ 警告：刪除工單會永久移除 CSV 資料，請確認已備份。\n請確認選取清單無誤後再刪除。")
-                        del_wo_ids = st.multiselect("選擇要刪除的工單ID，可多選", list(admin_db['工單ID']), key="admin_del_wo_multi")
+                        
+                        def format_del_wo(wid):
+                            r = admin_db[admin_db['工單ID'] == wid].iloc[0]
+                            return f"{wid} | {r['填寫人']} | {r.get('機台類型','')} | {r.get('工單號碼','')} | {r.get('圖號','')} | {r['狀態']} | {r['開始時間']}"
+                        
+                        del_wo_ids = st.multiselect("選擇要刪除的工單ID，可多選", list(admin_db['工單ID']), format_func=format_del_wo, key="admin_del_wo_multi")
                         
                         if del_wo_ids:
                             st.write("**即將刪除的工單資料：**")
