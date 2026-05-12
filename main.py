@@ -9,6 +9,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import gspread
 from google.oauth2.service_account import Credentials
+from estimate_tools import render_estimate_tool
 
 # --- 0. Streamlit 頁面設定 (必須在最前面) ---
 st.set_page_config(page_title="工廠生產管理系統 V5.2 (防限流快取版)", layout="wide")
@@ -440,10 +441,18 @@ emps = load_employees_cached()
 db_df = load_work_orders_cached()
 
 if not is_print_mode:
-    tab1, tab2, tab_ng, tab3, tab4 = st.tabs(["🏗️ 磨床報工", "⚡ 放電機/快走絲報工", "🚨 NG 管理", "📊 主管數據看板", "🛠️ 主管後台管理"])
+    tab1, tab2, tab_est, tab_ng, tab3, tab4 = st.tabs([
+        "🏗️ 磨床報工",
+        "⚡ 放電機/快走絲報工",
+        "🧮 預估工時",
+        "🚨 NG 管理",
+        "📊 主管數據看板",
+        "🛠️ 主管後台管理"
+    ])
 else:
     tab1 = st.empty()
     tab2 = st.empty()
+    tab_est = st.empty()
     tab_ng = st.empty()
     tab3 = st.container()
     tab4 = st.empty()
@@ -737,7 +746,11 @@ with tab2:
                         curr.loc[mask, ['狀態', '最後恢復時間']] = ['進行中', datetime.now(TAIWAN_TZ).strftime("%Y-%m-%d %H:%M:%S")]
                         save_work_orders(curr)
                         st.success("▶️ 已恢復加工！"); st.rerun()
-
+                        
+# --- 頁籤：預估工時 ---
+with tab_est:
+    render_estimate_tool("estimate_page")
+    
 # --- 頁籤 NG 管理 ---
 with tab_ng:
     st.header("🚨 NG 管理")
