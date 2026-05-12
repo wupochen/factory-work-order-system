@@ -754,16 +754,16 @@ with tab_ng:
 
             with st.expander("🔍 篩選條件", expanded=True):
                 nc1, nc2, nc3, nc4 = st.columns(4)
-                with nc1: f_ng_dates = st.date_input("日期區間", [min_d, max_d])
-                with nc2: f_ng_mac = st.selectbox("機台類型", ["全部"] + MACHINE_TYPES)
-                with nc3: f_ng_ptype = st.selectbox("生產類型", ["全部"] + ["NG重修", "NG重製", "重製"])
-                with nc4: f_ng_res = st.selectbox("責任人", ["全部"] + list(ng_df['責任人'].dropna().unique()))
+                with nc1: f_ng_dates = st.date_input("日期區間", [min_d, max_d], key="ng_date_range")
+                with nc2: f_ng_mac = st.selectbox("機台類型", ["全部"] + MACHINE_TYPES, key="ng_machine_filter")
+                with nc3: f_ng_ptype = st.selectbox("生產類型", ["全部"] + ["NG重修", "NG重製", "重製"], key="ng_ptype_filter")
+                with nc4: f_ng_res = st.selectbox("責任人", ["全部"] + list(ng_df['責任人'].dropna().unique()), key="ng_res_filter")
                 
                 nc5, nc6, nc7, nc8 = st.columns(4)
-                with nc5: f_ng_ntype = st.selectbox("NG 類型", ["全部"] + list(ng_df['NG類型'].dropna().unique()))
-                with nc6: f_ng_meth = st.selectbox("處理方式", ["全部"] + list(ng_df['處理方式'].dropna().unique()))
-                with nc7: f_ng_stat = st.selectbox("狀態", ["全部", "待處理", "處理中", "已完成"])
-                with nc8: f_ng_kw = st.text_input("工單號碼/圖號 關鍵字")
+                with nc5: f_ng_ntype = st.selectbox("NG 類型", ["全部"] + list(ng_df['NG類型'].dropna().unique()), key="ng_ntype_filter")
+                with nc6: f_ng_meth = st.selectbox("處理方式", ["全部"] + list(ng_df['處理方式'].dropna().unique()), key="ng_meth_filter")
+                with nc7: f_ng_stat = st.selectbox("狀態", ["全部", "待處理", "處理中", "已完成"], key="ng_stat_filter")
+                with nc8: f_ng_kw = st.text_input("工單號碼/圖號 關鍵字", key="ng_kw_filter")
 
             filtered_ng = ng_df.copy()
             if isinstance(f_ng_dates, (list, tuple)) and len(f_ng_dates) == 2:
@@ -792,23 +792,23 @@ with tab_ng:
             st.dataframe(filtered_ng[[c for c in NG_COLS if c in filtered_ng.columns]], use_container_width=True)
 
             st.markdown("### ✏️ 修改 NG 紀錄")
-            edit_ng_id = st.selectbox("選擇要修改的 NG_ID", [""] + list(filtered_ng['NG_ID']))
+            edit_ng_id = st.selectbox("選擇要修改的 NG_ID", [""] + list(filtered_ng['NG_ID']), key="ng_edit_id_sel")
             if edit_ng_id:
                 ng_row = ng_df[ng_df['NG_ID'] == edit_ng_id].iloc[0]
                 n_c1, n_c2, n_c3 = st.columns(3)
                 with n_c1:
                     all_e = sorted(list(set(emps + ng_df['責任人'].dropna().tolist())))
                     e_idx = all_e.index(ng_row['責任人']) if ng_row['責任人'] in all_e else 0
-                    u_resp = st.selectbox("責任人", all_e, index=e_idx)
-                    u_ntype = st.text_input("NG類型", value=str(ng_row.get('NG類型', '')))
+                    u_resp = st.selectbox("責任人", all_e, index=e_idx, key="ng_edit_resp")
+                    u_ntype = st.text_input("NG類型", value=str(ng_row.get('NG類型', '')), key="ng_edit_ntype")
                 with n_c2:
-                    u_nnote = st.text_area("NG說明/重製原因", value=str(ng_row.get('NG說明', '')))
+                    u_nnote = st.text_area("NG說明/重製原因", value=str(ng_row.get('NG說明', '')), key="ng_edit_nnote")
                 with n_c3:
-                    u_meth = st.text_input("處理方式", value=str(ng_row.get('處理方式', '')))
+                    u_meth = st.text_input("處理方式", value=str(ng_row.get('處理方式', '')), key="ng_edit_meth")
                     m_stat = ["待處理", "處理中", "已完成"]
                     s_idx = m_stat.index(ng_row['狀態']) if ng_row['狀態'] in m_stat else 0
-                    u_stat = st.selectbox("狀態", m_stat, index=s_idx)
-                    u_note = st.text_input("備註", value=str(ng_row.get('備註', '')))
+                    u_stat = st.selectbox("狀態", m_stat, index=s_idx, key="ng_edit_stat")
+                    u_note = st.text_input("備註", value=str(ng_row.get('備註', '')), key="ng_edit_note")
 
                 if st.button("💾 儲存 NG 紀錄", type="primary"):
                     raw_ng = load_ng_records_raw()
@@ -840,12 +840,12 @@ with tab3:
                 
                 with st.container(border=not is_print_mode):
                     c1, c2, c3, c4, c5, c6 = st.columns([1.5, 2, 2, 2, 2, 2])
-                    with c1: v_mode = st.radio("檢視模式", ["整體", "個人"], horizontal=True)
-                    with c2: s_emp = st.selectbox("員工篩選", emps, disabled=(v_mode=="整體"))
-                    with c3: d_range = st.date_input("日期區間", [full_df['日期_date'].min(), full_df['日期_date'].max()])
-                    with c4: s_status = st.selectbox("工單狀態", ["已完成", "進行中", "暫停中", "全部"])
-                    with c5: s_type = st.selectbox("生產類型篩選", ["全部"] + PROD_TYPES)
-                    with c6: s_machine = st.selectbox("機台類型篩選", ["全部"] + MACHINE_TYPES)
+                    with c1: v_mode = st.radio("檢視模式", ["整體", "個人"], horizontal=True, key="dash_v_mode")
+                    with c2: s_emp = st.selectbox("員工篩選", emps, disabled=(v_mode=="整體"), key="dash_s_emp")
+                    with c3: d_range = st.date_input("日期區間", [full_df['日期_date'].min(), full_df['日期_date'].max()], key="dashboard_date_range")
+                    with c4: s_status = st.selectbox("工單狀態", ["已完成", "進行中", "暫停中", "全部"], key="dash_status_filter")
+                    with c5: s_type = st.selectbox("生產類型篩選", ["全部"] + PROD_TYPES, key="dash_ptype_filter")
+                    with c6: s_machine = st.selectbox("機台類型篩選", ["全部"] + MACHINE_TYPES, key="dash_mac_filter")
                 
                 f_df = full_df.copy()
                 if v_mode == "個人": f_df = f_df[f_df['填寫人'] == s_emp]
@@ -869,7 +869,7 @@ with tab3:
                     st.markdown("### 📈 數據分析戰情室")
                     if done_df.empty: st.info("無已完成工單。")
                     else:
-                        t_level = st.radio("分析層級", ["月統計", "日統計", "工單明細"], horizontal=True)
+                        t_level = st.radio("分析層級", ["月統計", "日統計", "工單明細"], horizontal=True, key="dash_t_level")
                         x_field = "年月" if t_level == "月統計" else ("月日" if t_level == "日統計" else "工單ID")
                         chart_df = done_df.groupby([x_field, '生產類型']).agg({'實際工時':'sum', '預估工時':'sum'}).reset_index()
                         time_agg = done_df.groupby(x_field).agg({'實際工時':'sum', '預估工時':'sum'}).reset_index()
@@ -907,8 +907,8 @@ with tab4:
                 st.write("**步驟一：篩選**")
                 c_f1, c_f2, c_f3 = st.columns(3)
                 with c_f1: a_emp = st.selectbox("填寫人", ["全部"] + emps, key="a_emp")
-                with c_f2: a_stat = st.selectbox("狀態", ["全部", "進行中", "暫停中", "已完成"])
-                with c_f3: a_kw = st.text_input("工單號碼/圖號 關鍵字")
+                with c_f2: a_stat = st.selectbox("狀態", ["全部", "進行中", "暫停中", "已完成"], key="admin_stat_filter")
+                with c_f3: a_kw = st.text_input("工單號碼/圖號 關鍵字", key="admin_kw_filter")
                 
                 e_df = db_df.copy()
                 if a_emp != "全部": e_df = e_df[e_df['填寫人'] == a_emp]
@@ -917,21 +917,21 @@ with tab4:
                 
                 st.dataframe(e_df, height=200)
                 
-                edit_id = st.selectbox("選擇要修改的工單", [""] + list(e_df['工單ID']))
+                edit_id = st.selectbox("選擇要修改的工單", [""] + list(e_df['工單ID']), key="admin_edit_id")
                 if edit_id:
                     row_data = db_df[db_df['工單ID'] == edit_id].iloc[0]
                     col_1, col_2, col_3 = st.columns(3)
                     with col_1:
-                        n_emp = st.text_input("填寫人", row_data.get('填寫人'))
-                        n_type = st.selectbox("生產類型", PROD_TYPES, index=PROD_TYPES.index(row_data.get('生產類型', '正常生產')) if row_data.get('生產類型') in PROD_TYPES else 0)
-                        n_qty = st.number_input("數量", value=int(row_data.get('工件數量', 1)))
+                        n_emp = st.text_input("填寫人", row_data.get('填寫人'), key="adm_e_emp")
+                        n_type = st.selectbox("生產類型", PROD_TYPES, index=PROD_TYPES.index(row_data.get('生產類型', '正常生產')) if row_data.get('生產類型') in PROD_TYPES else 0, key="adm_e_type")
+                        n_qty = st.number_input("數量", value=int(row_data.get('工件數量', 1)), key="adm_e_qty")
                     with col_2:
-                        n_mac = st.selectbox("機台", MACHINE_TYPES, index=MACHINE_TYPES.index(row_data.get('機台類型', '磨床')) if row_data.get('機台類型') in MACHINE_TYPES else 0)
-                        n_est = st.number_input("預估工時", value=float(row_data.get('預估工時', 0)))
-                        n_act = st.number_input("實際工時", value=float(row_data.get('實際工時', 0)))
+                        n_mac = st.selectbox("機台", MACHINE_TYPES, index=MACHINE_TYPES.index(row_data.get('機台類型', '磨床')) if row_data.get('機台類型') in MACHINE_TYPES else 0, key="adm_e_mac")
+                        n_est = st.number_input("預估工時", value=float(row_data.get('預估工時', 0)), key="adm_e_est")
+                        n_act = st.number_input("實際工時", value=float(row_data.get('實際工時', 0)), key="adm_e_act")
                     with col_3:
-                        n_stat = st.selectbox("狀態", ["進行中", "暫停中", "已完成"], index=["進行中", "暫停中", "已完成"].index(row_data.get('狀態', '已完成')) if row_data.get('狀態') in ["進行中", "暫停中", "已完成"] else 2)
-                        n_note = st.text_area("備註", row_data.get('備註', ''))
+                        n_stat = st.selectbox("狀態", ["進行中", "暫停中", "已完成"], index=["進行中", "暫停中", "已完成"].index(row_data.get('狀態', '已完成')) if row_data.get('狀態') in ["進行中", "暫停中", "已完成"] else 2, key="adm_e_stat")
+                        n_note = st.text_area("備註", row_data.get('備註', ''), key="adm_e_note")
                         
                     if st.button("💾 儲存修改", type="primary"):
                         backup_factory_db()
@@ -943,7 +943,7 @@ with tab4:
                         st.success("✅ 修改成功！"); st.rerun()
 
         st.subheader("🗑️ 工單刪除")
-        del_ids = st.multiselect("選擇要刪除的工單ID", list(db_df['工單ID']))
+        del_ids = st.multiselect("選擇要刪除的工單ID", list(db_df['工單ID']), key="adm_del_ids")
         if del_ids and st.checkbox("確認永久刪除") and st.button("☠️ 永久刪除"):
             backup_factory_db()
             rdb = load_work_orders_raw()
