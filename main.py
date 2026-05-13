@@ -12,7 +12,7 @@ from google.oauth2.service_account import Credentials
 from estimate_tools import render_estimate_tool
 
 # --- 0. Streamlit 頁面設定 (必須在最前面) ---
-st.set_page_config(page_title="工廠生產管理系統 V5.2 (防限流快取版)", layout="wide")
+st.set_page_config(page_title="工廠生產管理系統 V5.2.1 (防限流快取版)", layout="wide")
 
 # --- 1. 系統常數、密碼與時區設定 ---
 TAIWAN_TZ = ZoneInfo("Asia/Taipei")
@@ -562,8 +562,21 @@ with tab1:
                     
             st.divider()
             
-            # 結案區塊：完全無備註欄位
-            if st.button("✅ 加工完成並結案", key=f"btn_{row['工單ID']}", type="primary"):
+                        # 結案區塊：目前工時顯示在按鈕右邊
+            finish_col, hour_col = st.columns([1, 2])
+
+            with finish_col:
+                finish_clicked = st.button(
+                    "✅ 加工完成並結案",
+                    key=f"btn_{row['工單ID']}",
+                    type="primary",
+                    use_container_width=True
+                )
+
+            with hour_col:
+                st.info(f"⏱️ 目前工時 / Thời gian hiện tại：{cur_h} 小時")
+
+            if finish_clicked:
                 curr = load_work_orders_raw()
                 mask = (curr['工單ID'] == row['工單ID']) & (curr['狀態'] == '進行中')
                 if not curr[mask].empty:
@@ -706,21 +719,35 @@ with tab2:
             with c_e2: e_t = st.time_input("機台實際停止時間", value=datetime.now(TAIWAN_TZ).time(), key=f"end_t_{row['工單ID']}")
             l_run = st.checkbox("午休是否持續加工", value=True, key=f"l_run_{row['工單ID']}")
 
-            if st.button("✅ 加工完成並結案", key=f"btn_ew_{row['工單ID']}", type="primary"):
+           finish_col, hour_col = st.columns([1, 2])
+
+            with finish_col:
+                finish_clicked = st.button(
+                    "✅ 加工完成並結案",
+                    key=f"btn_ew_{row['工單ID']}",
+                    type="primary",
+                    use_container_width=True
+                )
+
+            with hour_col:
+                st.info(f"⏱️ 目前機台工時 / Thời gian máy hiện tại：{cur_h} 小時")
+
+            if finish_clicked:
                 end_dt = datetime.combine(e_d, e_t).replace(tzinfo=TAIWAN_TZ)
                 start_dt = parse_taiwan_time(row['開始時間'])
-                if end_dt < start_dt: st.error("❌ 機台停止時間不可早於開始時間。")
+                if end_dt < start_dt:
+                    st.error("❌ 機台停止時間不可早於開始時間。")
                 else:
                     curr = load_work_orders_raw()
                     mask = (curr['工單ID'] == row['工單ID']) & (curr['狀態'] == '進行中')
                     if not curr[mask].empty:
                         seg = calculate_elapsed_hours(res_dt, end_dt) if l_run else calculate_work_hours_excluding_lunch(res_dt, end_dt)
                         fin_h = round(float(row.get('累積工作區間工時', 0)) + seg, 2)
-                        
+
                         curr.loc[mask, ['結束時間', '實際工時', '工作區間工時', '累積工作區間工時', '時間差異', '狀態', '備註']] = \
                             [end_dt.strftime("%Y-%m-%d %H:%M:%S"), fin_h, fin_h, fin_h, 0.0, '已完成', str(row.get('備註', ''))]
                         save_work_orders(curr)
-                        
+
                         if row['生產類型'] != "正常生產":
                             send_line_message(
                                 f"\n⚠️異常結案通知\n機台：{row['機台類型']}\n類型：{row['生產類型']}\n人員：{row['填寫人']}\n"
@@ -836,10 +863,10 @@ with tab_ng:
 with tab3:
     if st.session_state["is_admin"]:
         if is_print_mode:
-            st.markdown(f"<h1 style='text-align: center;'>工廠生產管理月報表 (V5) - {datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d')}</h1>", unsafe_allow_html=True)
+            st.markdown(f"<h1 style='text-align: center;'>工廠生產管理月報表 (V5.2.1) - {datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d')}</h1>", unsafe_allow_html=True)
             full_df = load_work_orders_cached()
         else:
-            st.title("📊 生產數據看板 (V5)")
+            st.title("📊 生產數據看板 (V5.2.1)")
             full_df = db_df
         
         if full_df.empty: st.info("無工單資料。")
