@@ -33,10 +33,11 @@ MACHINE_TYPES_BILINGUAL = {
 }
 
 # 生產類型
-PROD_TYPES = ["正常生產", "插件", "NG重修", "NG重製", "重製"]
+PROD_TYPES = ["正常生產", "插件","G2二次研磨加工", "NG重修", "NG重製", "重製"]
 PROD_TYPES_BILINGUAL = {
     "正常生產": "正常生產 / Sản xuất bình thường",
     "插件": "插件 / Công việc chen ngang",
+    "G2二次研磨加工": "G2二次研磨加工 / Mài lần 2 G2",
     "NG重修": "NG重修 / Sửa lại NG",
     "NG重製": "NG重製 / Làm lại NG",
     "重製": "重製 / Làm lại"
