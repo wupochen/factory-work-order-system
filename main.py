@@ -562,7 +562,7 @@ with tab1:
                     
             st.divider()
             
-                        # 結案區塊：目前工時顯示在按鈕右邊
+            # 結案區塊：目前工時顯示在按鈕右邊
             finish_col, hour_col = st.columns([1, 2])
 
             with finish_col:
@@ -591,7 +591,6 @@ with tab1:
                             f"實際加工：{cur_h}h\n備註：\n{str(row.get('備註', ''))}"
                         )
                     st.success(f"✅ 已結案！工時：{cur_h}h"); st.rerun()
-
     st.subheader("⏸️ 暫停中的工單查詢")
     pause_df = db_df[(db_df['狀態'] == '暫停中') & (db_df['機台類型'] == '磨床')]
     for _, row in pause_df.iterrows():
