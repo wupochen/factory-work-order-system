@@ -12,7 +12,7 @@ from google.oauth2.service_account import Credentials
 from estimate_tools import render_estimate_tool
 
 # --- 0. Streamlit 頁面設定 (必須在最前面) ---
-st.set_page_config(page_title="工廠生產管理系統 V5.2.2 (防限流快取版)", layout="wide")
+st.set_page_config(page_title="工廠生產管理系統 V5.2.3 (防限流快取版)", layout="wide")
 
 # --- 1. 系統常數、密碼與時區設定 ---
 TAIWAN_TZ = ZoneInfo("Asia/Taipei")
@@ -550,7 +550,7 @@ with tab1:
             st.write(f"**圖號:** {row['圖號']} | **工件數量:** {row.get('工件數量', 1)}")
             st.info(f"⏱️ 系統累積工作區間工時: {cur_h} 小時")
             
-            # --- 磨床修正區塊開始 (V5.2.2) ---
+            # --- 磨床修正區塊開始 (V5.2.3) ---
             with st.expander("✏️ 填錯資料修正 / Chỉnh sửa thông tin nhập sai"):
                 st.info("僅限修正基本資料。如需更改狀態或時間，請聯繫主管。")
                 
@@ -646,6 +646,7 @@ with tab1:
                                             '處理方式': meth, '狀態': '待處理', '備註': '', '更新時間': now_str
                                         }
                                         raw_ng = pd.concat([raw_ng, pd.DataFrame([new_row])], ignore_index=True)
+                                        raw_ng = raw_ng.reindex(columns=NG_COLS)
                                         ng_modified = True
                                     else:
                                         idx = raw_ng[ng_mask].index[0]
@@ -697,6 +698,124 @@ with tab1:
                         else:
                             st.error("❌ 此工單狀態已變更，無法修改。")
             # --- 磨床修正區塊結束 ---
+
+            # --- 磨床交接 / 換人接手區塊開始 (V5.2.3 穩定版) ---
+            with st.expander("🔁 交接 / 換人接手 / Bàn giao / Chuyển người tiếp theo"):
+                st.info("⚠️ 注意：交接將結束目前工單段落，並自動建立新工單給接手人。")
+                with st.form(key=f"ho_form_g_{row['工單ID']}"):
+                    hc1, hc2 = st.columns(2)
+                    with hc1:
+                        ho_emp = st.selectbox("接手人 / Người tiếp nhận", emps, key=f"ho_emp_g_{row['工單ID']}")
+                    with hc2:
+                        ho_reason_opts = ["換班", "臨時調度", "原人員下班", "支援其他工單", "其他"]
+                        ho_reason = st.selectbox("交接原因 / Lý do bàn giao", ho_reason_opts, key=f"ho_reason_g_{row['工單ID']}")
+                    
+                    ho_note = st.text_area("交接備註 / Ghi chú bàn giao (選填)", key=f"ho_note_g_{row['工單ID']}").strip()
+                    ho_submit = st.form_submit_button("🔁 確認交接 / Xác nhận bàn giao")
+
+                if ho_submit:
+                    if ho_emp == row['填寫人']:
+                        st.error("❌ 接手人不可與目前填寫人相同！")
+                    else:
+                        curr = load_work_orders_raw()
+                        mask = (curr['工單ID'].astype(str) == str(row['工單ID'])) & (curr['狀態'] == '進行中')
+                        
+                        if not curr[mask].empty:
+                            now_dt = datetime.now(TAIWAN_TZ)
+                            now_str = now_dt.strftime('%Y-%m-%d %H:%M:%S')
+                            new_wo_id = f"WO-{now_dt.strftime('%Y%m%d%H%M%S%f')}"
+                            
+                            # 1. 在 curr 裡面更新原工單為已交接
+                            old_note = str(row.get('備註', ''))
+                            append_note = f"[{now_str}] 交接給 {ho_emp}，原因：{ho_reason}。{ho_note}"
+                            final_old_note = f"{old_note} | {append_note}" if old_note.strip() else append_note
+                            
+                            curr.loc[mask, ['結束時間', '實際工時', '工作區間工時', '累積工作區間工時', '時間差異', '狀態', '備註']] = \
+                                [now_str, cur_h, cur_h, cur_h, round(cur_h - float(row.get('預估工時', 0)), 2), '已交接', final_old_note]
+
+                            # 2. 將新工單加入同一個 curr DataFrame
+                            new_note = f"由 {row['填寫人']} 交接。{ho_note}"
+                            new_wo_dict = {
+                                '工單ID': new_wo_id, '日期': now_dt.strftime("%Y-%m-%d"), '填寫人': ho_emp,
+                                '生產類型': row['生產類型'], '機台類型': row.get('機台類型', '磨床'), '工單號碼': row['工單號碼'], 
+                                '圖號': row['圖號'], '工件數量': row.get('工件數量', 1), '預估工時': row['預估工時'],
+                                '實際工時': 0.0, '開始時間': now_str, '結束時間': "", '工作區間工時': 0.0,
+                                '累積工作區間工時': 0.0, '最後恢復時間': now_str, '暫停時間': "", '暫停原因': "",
+                                '時間差異': 0.0, '狀態': '進行中', '備註': new_note
+                            }
+                            new_wo_df = pd.DataFrame([new_wo_dict])
+                            curr = pd.concat([curr, new_wo_df], ignore_index=True)
+                            curr = curr.reindex(columns=STANDARD_COLS)
+
+                            # 3. 處理 NG 連動資料 (同理一次性準備 raw_ng)
+                            raw_ng = None
+                            ng_modified = False
+                            ng_warning = False
+                            ng_prepare_ok = True
+                            
+                            if row['生產類型'] in ["NG重修", "NG重製", "重製"]:
+                                try:
+                                    raw_ng = load_ng_records_raw()
+                                    ng_mask = raw_ng['工單ID'].astype(str) == str(row['工單ID'])
+                                    if not raw_ng[ng_mask].empty:
+                                        old_ng = raw_ng[ng_mask].iloc[0]
+                                        new_ng_id = f"NG-{now_dt.strftime('%Y%m%d%H%M%S%f')}"
+                                        
+                                        # 更新原 NG 紀錄
+                                        idx = raw_ng[ng_mask].index[0]
+                                        old_ng_note = str(raw_ng.at[idx, '備註']) if pd.notna(raw_ng.at[idx, '備註']) else ""
+                                        app_ng_note = f"此工單已交接給 {ho_emp}，新工單ID：{new_wo_id}"
+                                        raw_ng.at[idx, '備註'] = f"{old_ng_note} | {app_ng_note}" if old_ng_note.strip() else app_ng_note
+                                        raw_ng.at[idx, '更新時間'] = now_str
+                                        
+                                        # 加入新 NG 紀錄
+                                        new_ng_dict = {
+                                            "NG_ID": new_ng_id, "建立時間": now_str, "發生日期": now_dt.strftime("%Y-%m-%d"),
+                                            "發現人": old_ng['發現人'], "責任人": old_ng['責任人'], "機台類型": row.get('機台類型', '磨床'), 
+                                            "工單ID": new_wo_id, "工單號碼": row['工單號碼'], "圖號": row['圖號'], 
+                                            "工件數量": row.get('工件數量', 1), "生產類型": row['生產類型'], 
+                                            "NG類型": old_ng.get('NG類型', ''), "NG說明": old_ng.get('NG說明', ''), 
+                                            "處理方式": old_ng.get('處理方式', ''), "狀態": "待處理",
+                                            "備註": f"交接自原工單 {row['工單ID']}，原人員 {row['填寫人']}，接手人 {ho_emp}", 
+                                            "更新時間": now_str
+                                        }
+                                        raw_ng = pd.concat([raw_ng, pd.DataFrame([new_ng_dict])], ignore_index=True)
+                                        raw_ng = raw_ng.reindex(columns=NG_COLS)
+                                        ng_modified = True
+                                    else:
+                                        ng_warning = True
+                                except Exception as e:
+                                    st.error(f"❌ 準備 NG 紀錄時發生錯誤: {e}")
+                                    ng_prepare_ok = False
+                            
+                            # 4. 一次性執行儲存 (Transaction)
+                            if ng_prepare_ok:
+                                save_work_orders(curr) 
+                                
+                                if ng_modified and raw_ng is not None:
+                                    save_ng_records(raw_ng) 
+                                    
+                                # 5. 發送 LINE 通知
+                                line_msg = (
+                                    f"\n🔁 工單交接通知\n機台：{row.get('機台類型', '磨床')}\n類型：{row['生產類型']}\n"
+                                    f"原人員：{row['填寫人']}\n接手人：{ho_emp}\n工單號碼：{row.get('工單號碼', '')}\n"
+                                    f"圖號：{row['圖號']}\n數量：{row.get('工件數量', 1)}\n原人員本段工時：{cur_h}h\n"
+                                    f"交接原因：{ho_reason}\n交接備註：{ho_note}\n"
+                                    f"原工單ID：{row['工單ID']}\n新工單ID：{new_wo_id}\n時間：台灣時間 {now_str}"
+                                )
+                                try:
+                                    if 'send_line_message' in globals():
+                                        send_line_message(line_msg)
+                                except Exception:
+                                    pass
+
+                                if ng_warning:
+                                    st.warning("⚠️ 此工單是 NG / 重製類型，但找不到原 NG 紀錄，已完成工單交接，請主管到 NG 管理確認。")
+                                st.success("✅ 交接成功！已結束原本段落並建立新工單。請重新整理頁面。")
+                                st.rerun()
+                        else:
+                            st.error("❌ 此工單狀態已變更，無法交接。")
+            # --- 磨床交接 / 換人接手區塊結束 ---
             
             p_reason = st.selectbox("暫停原因", PAUSE_REASONS, key=f"pr_{row['工單ID']}")
             if st.button("⏸️ 暫停加工", key=f"pb_{row['工單ID']}"):
@@ -849,7 +968,7 @@ with tab2:
             st.write(f"**圖號:** {row['圖號']} | **工件數量:** {row.get('工件數量', 1)}")
             st.info(f"⏱️ 系統目前累積工作區間 (機台運轉) 工時: {cur_h} 小時")
             
-            # --- 放電/快走絲修正區塊開始 (V5.2.2) ---
+            # --- 放電/快走絲修正區塊開始 (V5.2.3) ---
             with st.expander("✏️ 填錯資料修正 / Chỉnh sửa thông tin nhập sai"):
                 st.info("僅限修正基本資料。如需更改狀態或時間，請聯繫主管。")
                 
@@ -926,7 +1045,7 @@ with tab2:
                             meth = ""
                             final_ng_type = ""
                             final_note = ""
-                            ng_prepare_ok = True # 安全開關
+                            ng_prepare_ok = True 
                             
                             try:
                                 raw_ng = load_ng_records_raw()
@@ -950,6 +1069,7 @@ with tab2:
                                             '處理方式': meth, '狀態': '待處理', '備註': '', '更新時間': now_str
                                         }
                                         raw_ng = pd.concat([raw_ng, pd.DataFrame([new_row])], ignore_index=True)
+                                        raw_ng = raw_ng.reindex(columns=NG_COLS)
                                         ng_modified = True
                                     else:
                                         idx = raw_ng[ng_mask].index[0]
@@ -1001,6 +1121,124 @@ with tab2:
                         else:
                             st.error("❌ 此工單狀態已變更，無法修改。")
             # --- 放電/快走絲修正區塊結束 ---
+
+            # --- 放電/快走絲交接 / 換人接手區塊開始 (V5.2.3 穩定版) ---
+            with st.expander("🔁 交接 / 換人接手 / Bàn giao / Chuyển người tiếp theo"):
+                st.info("⚠️ 注意：交接將結束目前工單段落，並自動建立新工單給接手人。")
+                with st.form(key=f"ho_form_ew_{row['工單ID']}"):
+                    hc1, hc2 = st.columns(2)
+                    with hc1:
+                        ho_emp = st.selectbox("接手人 / Người tiếp nhận", emps, key=f"ho_emp_ew_{row['工單ID']}")
+                    with hc2:
+                        ho_reason_opts = ["換班", "臨時調度", "原人員下班", "支援其他工單", "其他"]
+                        ho_reason = st.selectbox("交接原因 / Lý do bàn giao", ho_reason_opts, key=f"ho_reason_ew_{row['工單ID']}")
+                    
+                    ho_note = st.text_area("交接備註 / Ghi chú bàn giao (選填)", key=f"ho_note_ew_{row['工單ID']}").strip()
+                    ho_submit = st.form_submit_button("🔁 確認交接 / Xác nhận bàn giao")
+
+                if ho_submit:
+                    if ho_emp == row['填寫人']:
+                        st.error("❌ 接手人不可與目前填寫人相同！")
+                    else:
+                        curr = load_work_orders_raw()
+                        mask = (curr['工單ID'].astype(str) == str(row['工單ID'])) & (curr['狀態'] == '進行中')
+                        
+                        if not curr[mask].empty:
+                            now_dt = datetime.now(TAIWAN_TZ)
+                            now_str = now_dt.strftime('%Y-%m-%d %H:%M:%S')
+                            new_wo_id = f"WO-{now_dt.strftime('%Y%m%d%H%M%S%f')}"
+                            
+                            # 1. 在 curr 裡面更新原工單為已交接
+                            old_note = str(row.get('備註', ''))
+                            append_note = f"[{now_str}] 交接給 {ho_emp}，原因：{ho_reason}。{ho_note}"
+                            final_old_note = f"{old_note} | {append_note}" if old_note.strip() else append_note
+                            
+                            curr.loc[mask, ['結束時間', '實際工時', '工作區間工時', '累積工作區間工時', '時間差異', '狀態', '備註']] = \
+                                [now_str, cur_h, cur_h, cur_h, round(cur_h - float(row.get('預估工時', 0)), 2), '已交接', final_old_note]
+
+                            # 2. 將新工單加入同一個 curr DataFrame
+                            new_note = f"由 {row['填寫人']} 交接。{ho_note}"
+                            new_wo_dict = {
+                                '工單ID': new_wo_id, '日期': now_dt.strftime("%Y-%m-%d"), '填寫人': ho_emp,
+                                '生產類型': row['生產類型'], '機台類型': row['機台類型'], '工單號碼': row['工單號碼'], 
+                                '圖號': row['圖號'], '工件數量': row.get('工件數量', 1), '預估工時': row['預估工時'],
+                                '實際工時': 0.0, '開始時間': now_str, '結束時間': "", '工作區間工時': 0.0,
+                                '累積工作區間工時': 0.0, '最後恢復時間': now_str, '暫停時間': "", '暫停原因': "",
+                                '時間差異': 0.0, '狀態': '進行中', '備註': new_note
+                            }
+                            new_wo_df = pd.DataFrame([new_wo_dict])
+                            curr = pd.concat([curr, new_wo_df], ignore_index=True)
+                            curr = curr.reindex(columns=STANDARD_COLS)
+
+                            # 3. 處理 NG 連動資料
+                            raw_ng = None
+                            ng_modified = False
+                            ng_warning = False
+                            ng_prepare_ok = True
+                            
+                            if row['生產類型'] in ["NG重修", "NG重製", "重製"]:
+                                try:
+                                    raw_ng = load_ng_records_raw()
+                                    ng_mask = raw_ng['工單ID'].astype(str) == str(row['工單ID'])
+                                    if not raw_ng[ng_mask].empty:
+                                        old_ng = raw_ng[ng_mask].iloc[0]
+                                        new_ng_id = f"NG-{now_dt.strftime('%Y%m%d%H%M%S%f')}"
+                                        
+                                        # 更新原 NG 紀錄
+                                        idx = raw_ng[ng_mask].index[0]
+                                        old_ng_note = str(raw_ng.at[idx, '備註']) if pd.notna(raw_ng.at[idx, '備註']) else ""
+                                        app_ng_note = f"此工單已交接給 {ho_emp}，新工單ID：{new_wo_id}"
+                                        raw_ng.at[idx, '備註'] = f"{old_ng_note} | {app_ng_note}" if old_ng_note.strip() else app_ng_note
+                                        raw_ng.at[idx, '更新時間'] = now_str
+                                        
+                                        # 加入新 NG 紀錄
+                                        new_ng_dict = {
+                                            "NG_ID": new_ng_id, "建立時間": now_str, "發生日期": now_dt.strftime("%Y-%m-%d"),
+                                            "發現人": old_ng['發現人'], "責任人": old_ng['責任人'], "機台類型": row['機台類型'], 
+                                            "工單ID": new_wo_id, "工單號碼": row['工單號碼'], "圖號": row['圖號'], 
+                                            "工件數量": row.get('工件數量', 1), "生產類型": row['生產類型'], 
+                                            "NG類型": old_ng.get('NG類型', ''), "NG說明": old_ng.get('NG說明', ''), 
+                                            "處理方式": old_ng.get('處理方式', ''), "狀態": "待處理",
+                                            "備註": f"交接自原工單 {row['工單ID']}，原人員 {row['填寫人']}，接手人 {ho_emp}", 
+                                            "更新時間": now_str
+                                        }
+                                        raw_ng = pd.concat([raw_ng, pd.DataFrame([new_ng_dict])], ignore_index=True)
+                                        raw_ng = raw_ng.reindex(columns=NG_COLS)
+                                        ng_modified = True
+                                    else:
+                                        ng_warning = True
+                                except Exception as e:
+                                    st.error(f"❌ 準備 NG 紀錄時發生錯誤: {e}")
+                                    ng_prepare_ok = False
+                            
+                            # 4. 一次性執行儲存 (Transaction)
+                            if ng_prepare_ok:
+                                save_work_orders(curr)
+                                
+                                if ng_modified and raw_ng is not None:
+                                    save_ng_records(raw_ng)
+                                    
+                                # 5. 發送 LINE 通知
+                                line_msg = (
+                                    f"\n🔁 工單交接通知\n機台：{row['機台類型']}\n類型：{row['生產類型']}\n"
+                                    f"原人員：{row['填寫人']}\n接手人：{ho_emp}\n工單號碼：{row.get('工單號碼', '')}\n"
+                                    f"圖號：{row['圖號']}\n數量：{row.get('工件數量', 1)}\n原人員本段工時：{cur_h}h\n"
+                                    f"交接原因：{ho_reason}\n交接備註：{ho_note}\n"
+                                    f"原工單ID：{row['工單ID']}\n新工單ID：{new_wo_id}\n時間：台灣時間 {now_str}"
+                                )
+                                try:
+                                    if 'send_line_message' in globals():
+                                        send_line_message(line_msg)
+                                except Exception:
+                                    pass
+
+                                if ng_warning:
+                                    st.warning("⚠️ 此工單是 NG / 重製類型，但找不到原 NG 紀錄，已完成工單交接，請主管到 NG 管理確認。")
+                                st.success("✅ 交接成功！已結束原本段落並建立新工單。請重新整理頁面。")
+                                st.rerun()
+                        else:
+                            st.error("❌ 此工單狀態已變更，無法交接。")
+            # --- 放電/快走絲交接 / 換人接手區塊結束 ---
             
             p_reason_ew = st.selectbox("暫停原因", PAUSE_REASONS, key=f"pr_ew_{row['工單ID']}")
             if st.button("⏸️ 暫停加工", key=f"pb_ew_{row['工單ID']}"):
@@ -1103,7 +1341,6 @@ with tab_ng:
                 nc5, nc6, nc7, nc8 = st.columns(4)
                 with nc5: f_ng_ntype = st.selectbox("NG 類型", ["全部"] + list(ng_df['NG類型'].dropna().unique()), key="ng_ntype_filter")
                 with nc6: f_ng_meth = st.selectbox("處理方式", ["全部"] + list(ng_df['處理方式'].dropna().unique()), key="ng_meth_filter")
-                # --- V5.2.2 新增已取消篩選 ---
                 with nc7: f_ng_stat = st.selectbox("狀態", ["全部", "待處理", "處理中", "已完成", "已取消"], key="ng_stat_filter")
                 with nc8: f_ng_kw = st.text_input("工單號碼/圖號 關鍵字", key="ng_kw_filter")
 
@@ -1165,10 +1402,10 @@ with tab_ng:
 with tab3:
     if st.session_state["is_admin"]:
         if is_print_mode:
-            st.markdown(f"<h1 style='text-align: center;'>工廠生產管理月報表 (V5.2.2) - {datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d')}</h1>", unsafe_allow_html=True)
+            st.markdown(f"<h1 style='text-align: center;'>工廠生產管理月報表 (V5.2.3) - {datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d')}</h1>", unsafe_allow_html=True)
             full_df = load_work_orders_cached()
         else:
-            st.title("📊 生產數據看板 (V5.2.2)")
+            st.title("📊 生產數據看板 (V5.2.3)")
             full_df = db_df
         
         if full_df.empty: st.info("無工單資料。")
@@ -1185,7 +1422,7 @@ with tab3:
                     with c1: v_mode = st.radio("檢視模式", ["整體", "個人"], horizontal=True, key="dash_v_mode")
                     with c2: s_emp = st.selectbox("員工篩選", emps, disabled=(v_mode=="整體"), key="dash_s_emp")
                     with c3: d_range = st.date_input("日期區間", [full_df['日期_date'].min(), full_df['日期_date'].max()], key="dashboard_date_range")
-                    with c4: s_status = st.selectbox("工單狀態", ["已完成", "進行中", "暫停中", "全部"], key="dash_status_filter")
+                    with c4: s_status = st.selectbox("工單狀態", ["已完成", "進行中", "暫停中", "已交接", "全部"], key="dash_status_filter")
                     with c5: s_type = st.selectbox("生產類型篩選", ["全部"] + PROD_TYPES, key="dash_ptype_filter")
                     with c6: s_machine = st.selectbox("機台類型篩選", ["全部"] + MACHINE_TYPES, key="dash_mac_filter")
                 
@@ -1249,7 +1486,7 @@ with tab4:
                 st.write("**步驟一：篩選**")
                 c_f1, c_f2, c_f3 = st.columns(3)
                 with c_f1: a_emp = st.selectbox("填寫人", ["全部"] + emps, key="a_emp")
-                with c_f2: a_stat = st.selectbox("狀態", ["全部", "進行中", "暫停中", "已完成"], key="admin_stat_filter")
+                with c_f2: a_stat = st.selectbox("狀態", ["全部", "進行中", "暫停中", "已完成", "已交接"], key="admin_stat_filter")
                 with c_f3: a_kw = st.text_input("工單號碼/圖號 關鍵字", key="admin_kw_filter")
                 
                 e_df = db_df.copy()
@@ -1272,7 +1509,7 @@ with tab4:
                         n_est = st.number_input("預估工時", value=float(row_data.get('預估工時', 0)), key="adm_e_est")
                         n_act = st.number_input("實際工時", value=float(row_data.get('實際工時', 0)), key="adm_e_act")
                     with col_3:
-                        n_stat = st.selectbox("狀態", ["進行中", "暫停中", "已完成"], index=["進行中", "暫停中", "已完成"].index(row_data.get('狀態', '已完成')) if row_data.get('狀態') in ["進行中", "暫停中", "已完成"] else 2, key="adm_e_stat")
+                        n_stat = st.selectbox("狀態", ["進行中", "暫停中", "已完成", "已交接"], index=["進行中", "暫停中", "已完成", "已交接"].index(row_data.get('狀態', '已完成')) if row_data.get('狀態') in ["進行中", "暫停中", "已完成", "已交接"] else 3, key="adm_e_stat")
                         n_note = st.text_area("備註", row_data.get('備註', ''), key="adm_e_note")
                         
                     if st.button("💾 儲存修改", type="primary"):
