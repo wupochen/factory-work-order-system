@@ -12,7 +12,7 @@ from google.oauth2.service_account import Credentials
 from estimate_tools import render_estimate_tool
 
 # --- 0. Streamlit 頁面設定 (必須在最前面) ---
-st.set_page_config(page_title="工廠生產管理系統 V5.2.1 (防限流快取版)", layout="wide")
+st.set_page_config(page_title="工廠生產管理系統 V5.2.2 (防限流快取版)", layout="wide")
 
 # --- 1. 系統常數、密碼與時區設定 ---
 TAIWAN_TZ = ZoneInfo("Asia/Taipei")
@@ -550,6 +550,154 @@ with tab1:
             st.write(f"**圖號:** {row['圖號']} | **工件數量:** {row.get('工件數量', 1)}")
             st.info(f"⏱️ 系統累積工作區間工時: {cur_h} 小時")
             
+            # --- 磨床修正區塊開始 (V5.2.2) ---
+            with st.expander("✏️ 填錯資料修正 / Chỉnh sửa thông tin nhập sai"):
+                st.info("僅限修正基本資料。如需更改狀態或時間，請聯繫主管。")
+                
+                with st.form(key=f"form_edit_g_{row['工單ID']}"):
+                    safe_emp = str(row['填寫人']).strip()
+                    emp_idx = emps.index(safe_emp) if safe_emp in emps else 0
+                    new_user = st.selectbox("填寫人 / Người điền", emps, index=emp_idx, key=f"edit_g_user_{row['工單ID']}")
+                    
+                    safe_type = str(row['生產類型']).strip()
+                    type_idx = PROD_TYPES.index(safe_type) if safe_type in PROD_TYPES else 0
+                    new_type = st.selectbox(
+                        "生產類型 / Loại sản xuất", 
+                        PROD_TYPES, 
+                        index=type_idx,
+                        format_func=lambda x: PROD_TYPES_BILINGUAL.get(x, x),
+                        key=f"edit_g_type_{row['工單ID']}"
+                    )
+                    
+                    new_order_no = st.text_input("工單號碼 / Mã đơn hàng", value=str(row['工單號碼']).strip(), key=f"edit_g_order_{row['工單ID']}")
+                    new_part_no = st.text_input("圖號 / Mã bản vẽ", value=str(row['圖號']).strip(), key=f"edit_g_part_{row['工單ID']}")
+                    
+                    safe_qty = pd.to_numeric(row.get('工件數量', 1), errors='coerce')
+                    safe_qty = int(safe_qty) if not pd.isna(safe_qty) and safe_qty >= 1 else 1
+                    new_qty = st.number_input("工件數量 / Số lượng", value=safe_qty, min_value=1, step=1, key=f"edit_g_qty_{row['工單ID']}")
+
+                    safe_est = pd.to_numeric(row.get('預估工時', 0), errors='coerce')
+                    safe_est = float(safe_est) if not pd.isna(safe_est) and safe_est > 0 else 0.1
+                    new_est = st.number_input("預估工時 / TG dự kiến (hrs)", value=safe_est, min_value=0.1, step=0.1, key=f"edit_g_est_{row['工單ID']}")
+
+                    st.caption("⚠️ 若生產類型改為「NG重修」、「NG重製」或「重製」，以下為必填欄位：")
+                    ng_disc = st.selectbox("發現人 / Người phát hiện (NG/重製必填)", emps, key=f"edit_g_ngdisc_{row['工單ID']}")
+                    ng_resp = st.selectbox("責任人 / Người phụ trách (NG/重製必填)", emps, key=f"edit_g_ngresp_{row['工單ID']}")
+                    ng_type_input = st.text_input("NG 類型 / Loại NG (重製免填)", key=f"edit_g_ngtype_{row['工單ID']}")
+                    ng_note = st.text_area("NG 說明 / 重製原因 / Giải thích", key=f"edit_g_ngnote_{row['工單ID']}")
+
+                    submit_btn = st.form_submit_button("確認修改資料 / Xác nhận sửa")
+
+                if submit_btn:
+                    has_error = False
+                    if not new_part_no.strip():
+                        st.error("❌ 圖號不可空白 / Mã bản vẽ không được để trống")
+                        has_error = True
+                        
+                    if new_type in ["NG重修", "NG重製"] and (not ng_type_input.strip() or not ng_note.strip()):
+                        st.error("❌ 選擇 NG重修 / NG重製 時，NG類型與NG說明不可空白！")
+                        has_error = True
+                        
+                    if new_type == "重製" and not ng_note.strip():
+                        st.error("❌ 選擇 重製 時，重製原因不可空白！")
+                        has_error = True
+
+                    if not has_error:
+                        curr = load_work_orders_raw()
+                        mask = (curr['工單ID'].astype(str) == str(row['工單ID'])) & (curr['狀態'] == '進行中') & (curr['機台類型'] == '磨床')
+                        
+                        if not curr[mask].empty:
+                            now_dt = datetime.now(TAIWAN_TZ)
+                            now_str = now_dt.strftime('%Y-%m-%d %H:%M:%S')
+                            
+                            # 1. 先準備 work_orders 資料 (先不存)
+                            curr.loc[mask, ['填寫人', '生產類型', '工單號碼', '圖號', '工件數量', '預估工時']] = [
+                                new_user, new_type, new_order_no.strip(), new_part_no.strip(), new_qty, new_est
+                            ]
+
+                            # 2. 先準備 ng_records 資料 (先不存)
+                            raw_ng = None
+                            ng_modified = False
+                            send_line = False
+                            meth = ""
+                            final_ng_type = ""
+                            final_note = ""
+                            ng_prepare_ok = True  # 控制是否往下儲存的安全開關
+                            
+                            try:
+                                raw_ng = load_ng_records_raw()
+                                ng_mask = raw_ng['工單ID'].astype(str) == str(row['工單ID'])
+                                
+                                if new_type in ["NG重修", "NG重製", "重製"]:
+                                    meth = "重修" if new_type == "NG重修" else "NG重製" if new_type == "NG重製" else "設變重製"
+                                    final_ng_type = ng_type_input.strip() if new_type in ["NG重修", "NG重製"] else "非 NG"
+                                    final_note = ng_note.strip()
+                                    send_line = True
+                                    
+                                    if raw_ng[ng_mask].empty:
+                                        new_ng_id = f"NG-{now_dt.strftime('%Y%m%d%H%M%S%f')}"
+                                        new_row = {
+                                            'NG_ID': new_ng_id, '建立時間': now_str, 
+                                            '發生日期': curr.loc[mask, '日期'].values[0] if '日期' in curr.columns and str(curr.loc[mask, '日期'].values[0]).strip() else now_dt.strftime('%Y-%m-%d'),
+                                            '發現人': ng_disc, '責任人': ng_resp, '機台類型': '磨床',
+                                            '工單ID': row['工單ID'], '工單號碼': new_order_no.strip(),
+                                            '圖號': new_part_no.strip(), '工件數量': new_qty,
+                                            '生產類型': new_type, 'NG類型': final_ng_type, 'NG說明': final_note,
+                                            '處理方式': meth, '狀態': '待處理', '備註': '', '更新時間': now_str
+                                        }
+                                        raw_ng = pd.concat([raw_ng, pd.DataFrame([new_row])], ignore_index=True)
+                                        ng_modified = True
+                                    else:
+                                        idx = raw_ng[ng_mask].index[0]
+                                        raw_ng.at[idx, '發現人'] = ng_disc
+                                        raw_ng.at[idx, '責任人'] = ng_resp
+                                        raw_ng.at[idx, '機台類型'] = '磨床'
+                                        raw_ng.at[idx, '工單號碼'] = new_order_no.strip()
+                                        raw_ng.at[idx, '圖號'] = new_part_no.strip()
+                                        raw_ng.at[idx, '工件數量'] = new_qty
+                                        raw_ng.at[idx, '生產類型'] = new_type
+                                        raw_ng.at[idx, 'NG類型'] = final_ng_type
+                                        raw_ng.at[idx, 'NG說明'] = final_note
+                                        raw_ng.at[idx, '處理方式'] = meth
+                                        if pd.isna(raw_ng.at[idx, '狀態']) or str(raw_ng.at[idx, '狀態']).strip() == "":
+                                            raw_ng.at[idx, '狀態'] = '待處理'
+                                        raw_ng.at[idx, '更新時間'] = now_str
+                                        ng_modified = True
+
+                                elif new_type in ["正常生產", "插件"] and not raw_ng[ng_mask].empty:
+                                    idx = raw_ng[ng_mask].index[0]
+                                    raw_ng.at[idx, '狀態'] = '已取消'
+                                    old_note = str(raw_ng.at[idx, '備註']) if pd.notna(raw_ng.at[idx, '備註']) else ""
+                                    append_note = f"工單基本資料修正：生產類型已改為 {new_type}，此 NG/重製紀錄取消。"
+                                    raw_ng.at[idx, '備註'] = f"{old_note} | {append_note}" if old_note.strip() else append_note
+                                    raw_ng.at[idx, '更新時間'] = now_str
+                                    ng_modified = True
+
+                            except Exception as e:
+                                st.error(f"❌ 準備 NG 紀錄資料時發生錯誤，已終止更新以保護資料安全: {e}")
+                                ng_prepare_ok = False
+
+                            # 3. 如果檢查與準備都通過，才執行儲存
+                            if ng_prepare_ok:
+                                save_work_orders(curr)
+                                if ng_modified and raw_ng is not None:
+                                    save_ng_records(raw_ng)
+                                
+                                # 4. 發送 LINE 通知
+                                if send_line:
+                                    line_msg = f"\n⚠️ NG / 重製工單資料修正通知\n類型：{new_type}\n機台：磨床\n人員：{new_user}\n發現人：{ng_disc}\n責任人：{ng_resp}\n工單號碼：{new_order_no.strip()}\n圖號：{new_part_no.strip()}\n數量：{new_qty}\nNG類型：{final_ng_type}\nNG說明：{final_note}\n處理方式：{meth}\n時間：台灣時間 {now_str}"
+                                    try:
+                                        if 'send_line_message' in globals():
+                                            send_line_message(line_msg)
+                                    except Exception:
+                                        pass
+
+                                st.success("✅ 資料已安全更新！請重新整理頁面。")
+                                st.rerun()
+                        else:
+                            st.error("❌ 此工單狀態已變更，無法修改。")
+            # --- 磨床修正區塊結束 ---
+            
             p_reason = st.selectbox("暫停原因", PAUSE_REASONS, key=f"pr_{row['工單ID']}")
             if st.button("⏸️ 暫停加工", key=f"pb_{row['工單ID']}"):
                 curr = load_work_orders_raw()
@@ -701,6 +849,159 @@ with tab2:
             st.write(f"**圖號:** {row['圖號']} | **工件數量:** {row.get('工件數量', 1)}")
             st.info(f"⏱️ 系統目前累積工作區間 (機台運轉) 工時: {cur_h} 小時")
             
+            # --- 放電/快走絲修正區塊開始 (V5.2.2) ---
+            with st.expander("✏️ 填錯資料修正 / Chỉnh sửa thông tin nhập sai"):
+                st.info("僅限修正基本資料。如需更改狀態或時間，請聯繫主管。")
+                
+                with st.form(key=f"form_edit_ew_{row['工單ID']}"):
+                    safe_emp = str(row['填寫人']).strip()
+                    emp_idx = emps.index(safe_emp) if safe_emp in emps else 0
+                    new_user = st.selectbox("填寫人 / Người điền", emps, index=emp_idx, key=f"edit_ew_user_{row['工單ID']}")
+                    
+                    safe_mach = str(row['機台類型']).strip()
+                    mach_options = ["放電機", "快走絲"]
+                    mach_idx = mach_options.index(safe_mach) if safe_mach in mach_options else 0
+                    new_machine = st.selectbox("機台類型 / Loại máy", mach_options, index=mach_idx, key=f"edit_ew_mach_{row['工單ID']}")
+
+                    safe_type = str(row['生產類型']).strip()
+                    type_idx = PROD_TYPES.index(safe_type) if safe_type in PROD_TYPES else 0
+                    new_type = st.selectbox(
+                        "生產類型 / Loại sản xuất", 
+                        PROD_TYPES, 
+                        index=type_idx,
+                        format_func=lambda x: PROD_TYPES_BILINGUAL.get(x, x),
+                        key=f"edit_ew_type_{row['工單ID']}"
+                    )
+                    
+                    new_order_no = st.text_input("工單號碼 / Mã đơn hàng", value=str(row['工單號碼']).strip(), key=f"edit_ew_order_{row['工單ID']}")
+                    new_part_no = st.text_input("圖號 / Mã bản vẽ", value=str(row['圖號']).strip(), key=f"edit_ew_part_{row['工單ID']}")
+                    
+                    safe_qty = pd.to_numeric(row.get('工件數量', 1), errors='coerce')
+                    safe_qty = int(safe_qty) if not pd.isna(safe_qty) and safe_qty >= 1 else 1
+                    new_qty = st.number_input("工件數量 / Số lượng", value=safe_qty, min_value=1, step=1, key=f"edit_ew_qty_{row['工單ID']}")
+
+                    safe_est = pd.to_numeric(row.get('預估工時', 0), errors='coerce')
+                    safe_est = float(safe_est) if not pd.isna(safe_est) and safe_est > 0 else 0.1
+                    new_est = st.number_input("預估機台工時 / TG máy dự kiến (hrs)", value=safe_est, min_value=0.1, step=0.1, key=f"edit_ew_est_{row['工單ID']}")
+
+                    st.caption("⚠️ 若生產類型改為「NG重修」、「NG重製」或「重製」，以下為必填欄位：")
+                    ng_disc = st.selectbox("發現人 / Người phát hiện (NG/重製必填)", emps, key=f"edit_ew_ngdisc_{row['工單ID']}")
+                    ng_resp = st.selectbox("責任人 / Người phụ trách (NG/重製必填)", emps, key=f"edit_ew_ngresp_{row['工單ID']}")
+                    ng_type_input = st.text_input("NG 類型 / Loại NG (重製免填)", key=f"edit_ew_ngtype_{row['工單ID']}")
+                    ng_note = st.text_area("NG 說明 / 重製原因 / Giải thích", key=f"edit_ew_ngnote_{row['工單ID']}")
+
+                    submit_btn = st.form_submit_button("確認修改資料 / Xác nhận sửa")
+
+                if submit_btn:
+                    has_error = False
+                    if not new_part_no.strip():
+                        st.error("❌ 圖號不可空白 / Mã bản vẽ không được để trống")
+                        has_error = True
+                        
+                    if new_type in ["NG重修", "NG重製"] and (not ng_type_input.strip() or not ng_note.strip()):
+                        st.error("❌ 選擇 NG重修 / NG重製 時，NG類型與NG說明不可空白！")
+                        has_error = True
+                        
+                    if new_type == "重製" and not ng_note.strip():
+                        st.error("❌ 選擇 重製 時，重製原因不可空白！")
+                        has_error = True
+
+                    if not has_error:
+                        curr = load_work_orders_raw()
+                        mask = (curr['工單ID'].astype(str) == str(row['工單ID'])) & (curr['狀態'] == '進行中') & (curr['機台類型'].isin(["放電機", "快走絲"]))
+                        
+                        if not curr[mask].empty:
+                            now_dt = datetime.now(TAIWAN_TZ)
+                            now_str = now_dt.strftime('%Y-%m-%d %H:%M:%S')
+                            
+                            # 1. 先準備 work_orders 資料 (先不存)
+                            curr.loc[mask, ['填寫人', '機台類型', '生產類型', '工單號碼', '圖號', '工件數量', '預估工時']] = [
+                                new_user, new_machine, new_type, new_order_no.strip(), new_part_no.strip(), new_qty, new_est
+                            ]
+
+                            # 2. 先準備 ng_records 資料 (先不存)
+                            raw_ng = None
+                            ng_modified = False
+                            send_line = False
+                            meth = ""
+                            final_ng_type = ""
+                            final_note = ""
+                            ng_prepare_ok = True # 安全開關
+                            
+                            try:
+                                raw_ng = load_ng_records_raw()
+                                ng_mask = raw_ng['工單ID'].astype(str) == str(row['工單ID'])
+                                
+                                if new_type in ["NG重修", "NG重製", "重製"]:
+                                    meth = "重修" if new_type == "NG重修" else "NG重製" if new_type == "NG重製" else "設變重製"
+                                    final_ng_type = ng_type_input.strip() if new_type in ["NG重修", "NG重製"] else "非 NG"
+                                    final_note = ng_note.strip()
+                                    send_line = True
+                                    
+                                    if raw_ng[ng_mask].empty:
+                                        new_ng_id = f"NG-{now_dt.strftime('%Y%m%d%H%M%S%f')}"
+                                        new_row = {
+                                            'NG_ID': new_ng_id, '建立時間': now_str, 
+                                            '發生日期': curr.loc[mask, '日期'].values[0] if '日期' in curr.columns and str(curr.loc[mask, '日期'].values[0]).strip() else now_dt.strftime('%Y-%m-%d'),
+                                            '發現人': ng_disc, '責任人': ng_resp, '機台類型': new_machine,
+                                            '工單ID': row['工單ID'], '工單號碼': new_order_no.strip(),
+                                            '圖號': new_part_no.strip(), '工件數量': new_qty,
+                                            '生產類型': new_type, 'NG類型': final_ng_type, 'NG說明': final_note,
+                                            '處理方式': meth, '狀態': '待處理', '備註': '', '更新時間': now_str
+                                        }
+                                        raw_ng = pd.concat([raw_ng, pd.DataFrame([new_row])], ignore_index=True)
+                                        ng_modified = True
+                                    else:
+                                        idx = raw_ng[ng_mask].index[0]
+                                        raw_ng.at[idx, '發現人'] = ng_disc
+                                        raw_ng.at[idx, '責任人'] = ng_resp
+                                        raw_ng.at[idx, '機台類型'] = new_machine
+                                        raw_ng.at[idx, '工單號碼'] = new_order_no.strip()
+                                        raw_ng.at[idx, '圖號'] = new_part_no.strip()
+                                        raw_ng.at[idx, '工件數量'] = new_qty
+                                        raw_ng.at[idx, '生產類型'] = new_type
+                                        raw_ng.at[idx, 'NG類型'] = final_ng_type
+                                        raw_ng.at[idx, 'NG說明'] = final_note
+                                        raw_ng.at[idx, '處理方式'] = meth
+                                        if pd.isna(raw_ng.at[idx, '狀態']) or str(raw_ng.at[idx, '狀態']).strip() == "":
+                                            raw_ng.at[idx, '狀態'] = '待處理'
+                                        raw_ng.at[idx, '更新時間'] = now_str
+                                        ng_modified = True
+
+                                elif new_type in ["正常生產", "插件"] and not raw_ng[ng_mask].empty:
+                                    idx = raw_ng[ng_mask].index[0]
+                                    raw_ng.at[idx, '狀態'] = '已取消'
+                                    old_note = str(raw_ng.at[idx, '備註']) if pd.notna(raw_ng.at[idx, '備註']) else ""
+                                    append_note = f"工單基本資料修正：生產類型已改為 {new_type}，此 NG/重製紀錄取消。"
+                                    raw_ng.at[idx, '備註'] = f"{old_note} | {append_note}" if old_note.strip() else append_note
+                                    raw_ng.at[idx, '更新時間'] = now_str
+                                    ng_modified = True
+
+                            except Exception as e:
+                                st.error(f"❌ 準備 NG 紀錄資料時發生錯誤，已終止更新以保護資料安全: {e}")
+                                ng_prepare_ok = False 
+
+                            # 3. 如果檢查與準備都通過，才執行儲存
+                            if ng_prepare_ok:
+                                save_work_orders(curr)
+                                if ng_modified and raw_ng is not None:
+                                    save_ng_records(raw_ng)
+
+                                # 4. 發送 LINE 通知
+                                if send_line:
+                                    line_msg = f"\n⚠️ NG / 重製工單資料修正通知\n類型：{new_type}\n機台：{new_machine}\n人員：{new_user}\n發現人：{ng_disc}\n責任人：{ng_resp}\n工單號碼：{new_order_no.strip()}\n圖號：{new_part_no.strip()}\n數量：{new_qty}\nNG類型：{final_ng_type}\nNG說明：{final_note}\n處理方式：{meth}\n時間：台灣時間 {now_str}"
+                                    try:
+                                        if 'send_line_message' in globals():
+                                            send_line_message(line_msg)
+                                    except Exception:
+                                        pass
+
+                                st.success("✅ 資料已安全更新！請重新整理頁面。")
+                                st.rerun()
+                        else:
+                            st.error("❌ 此工單狀態已變更，無法修改。")
+            # --- 放電/快走絲修正區塊結束 ---
+            
             p_reason_ew = st.selectbox("暫停原因", PAUSE_REASONS, key=f"pr_ew_{row['工單ID']}")
             if st.button("⏸️ 暫停加工", key=f"pb_ew_{row['工單ID']}"):
                 curr = load_work_orders_raw()
@@ -802,7 +1103,8 @@ with tab_ng:
                 nc5, nc6, nc7, nc8 = st.columns(4)
                 with nc5: f_ng_ntype = st.selectbox("NG 類型", ["全部"] + list(ng_df['NG類型'].dropna().unique()), key="ng_ntype_filter")
                 with nc6: f_ng_meth = st.selectbox("處理方式", ["全部"] + list(ng_df['處理方式'].dropna().unique()), key="ng_meth_filter")
-                with nc7: f_ng_stat = st.selectbox("狀態", ["全部", "待處理", "處理中", "已完成"], key="ng_stat_filter")
+                # --- V5.2.2 新增已取消篩選 ---
+                with nc7: f_ng_stat = st.selectbox("狀態", ["全部", "待處理", "處理中", "已完成", "已取消"], key="ng_stat_filter")
                 with nc8: f_ng_kw = st.text_input("工單號碼/圖號 關鍵字", key="ng_kw_filter")
 
             filtered_ng = ng_df.copy()
@@ -845,7 +1147,7 @@ with tab_ng:
                     u_nnote = st.text_area("NG說明/重製原因", value=str(ng_row.get('NG說明', '')), key="ng_edit_nnote")
                 with n_c3:
                     u_meth = st.text_input("處理方式", value=str(ng_row.get('處理方式', '')), key="ng_edit_meth")
-                    m_stat = ["待處理", "處理中", "已完成"]
+                    m_stat = ["待處理", "處理中", "已完成", "已取消"]
                     s_idx = m_stat.index(ng_row['狀態']) if ng_row['狀態'] in m_stat else 0
                     u_stat = st.selectbox("狀態", m_stat, index=s_idx, key="ng_edit_stat")
                     u_note = st.text_input("備註", value=str(ng_row.get('備註', '')), key="ng_edit_note")
@@ -863,10 +1165,10 @@ with tab_ng:
 with tab3:
     if st.session_state["is_admin"]:
         if is_print_mode:
-            st.markdown(f"<h1 style='text-align: center;'>工廠生產管理月報表 (V5.2.1) - {datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d')}</h1>", unsafe_allow_html=True)
+            st.markdown(f"<h1 style='text-align: center;'>工廠生產管理月報表 (V5.2.2) - {datetime.now(TAIWAN_TZ).strftime('%Y-%m-%d')}</h1>", unsafe_allow_html=True)
             full_df = load_work_orders_cached()
         else:
-            st.title("📊 生產數據看板 (V5.2.1)")
+            st.title("📊 生產數據看板 (V5.2.2)")
             full_df = db_df
         
         if full_df.empty: st.info("無工單資料。")
