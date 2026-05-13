@@ -583,14 +583,15 @@ with tab1:
                     curr.loc[mask, ['結束時間', '實際工時', '工作區間工時', '累積工作區間工時', '時間差異', '狀態', '備註']] = \
                         [datetime.now(TAIWAN_TZ).strftime("%Y-%m-%d %H:%M:%S"), cur_h, cur_h, cur_h, 0.0, '已完成', str(row.get('備註', ''))]
                     save_work_orders(curr)
-                    
+
                     if row['生產類型'] != "正常生產":
                         send_line_message(
                             f"\n⚠️異常結案通知\n機台：磨床\n類型：{row['生產類型']}\n人員：{row['填寫人']}\n"
                             f"工單號碼：{wo_no_disp}\n圖號：{row['圖號']}\n數量：{row.get('工件數量', 1)}\n"
                             f"實際加工：{cur_h}h\n備註：\n{str(row.get('備註', ''))}"
                         )
-                    st.success(f"✅ 已結案！工時：{cur_h}h"); st.rerun()
+                    st.success(f"✅ 已結案！工時：{cur_h}h")
+                    st.rerun()
     st.subheader("⏸️ 暫停中的工單查詢")
     pause_df = db_df[(db_df['狀態'] == '暫停中') & (db_df['機台類型'] == '磨床')]
     for _, row in pause_df.iterrows():
@@ -718,7 +719,7 @@ with tab2:
             with c_e2: e_t = st.time_input("機台實際停止時間", value=datetime.now(TAIWAN_TZ).time(), key=f"end_t_{row['工單ID']}")
             l_run = st.checkbox("午休是否持續加工", value=True, key=f"l_run_{row['工單ID']}")
 
-           finish_col, hour_col = st.columns([1, 2])
+            finish_col, hour_col = st.columns([1, 2])
 
             with finish_col:
                 finish_clicked = st.button(
