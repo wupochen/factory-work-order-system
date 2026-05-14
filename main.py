@@ -1498,7 +1498,7 @@ with tab4:
                 st.dataframe(e_df, height=200)
                 
                 edit_id = st.selectbox("選擇要修改的工單", [""] + list(e_df['工單ID']), key="admin_edit_id")
-                               if edit_id:
+                if edit_id:
                     row_data = db_df[db_df['工單ID'] == edit_id].iloc[0]
 
                     safe_qty = pd.to_numeric(row_data.get('工件數量', 1), errors='coerce')
