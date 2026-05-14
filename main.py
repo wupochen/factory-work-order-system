@@ -1498,30 +1498,90 @@ with tab4:
                 st.dataframe(e_df, height=200)
                 
                 edit_id = st.selectbox("選擇要修改的工單", [""] + list(e_df['工單ID']), key="admin_edit_id")
-                if edit_id:
+                               if edit_id:
                     row_data = db_df[db_df['工單ID'] == edit_id].iloc[0]
+
+                    safe_qty = pd.to_numeric(row_data.get('工件數量', 1), errors='coerce')
+                    safe_qty = int(safe_qty) if not pd.isna(safe_qty) and safe_qty >= 1 else 1
+
+                    safe_est = pd.to_numeric(row_data.get('預估工時', 0), errors='coerce')
+                    safe_est = float(safe_est) if not pd.isna(safe_est) else 0.0
+
+                    safe_act = pd.to_numeric(row_data.get('實際工時', 0), errors='coerce')
+                    safe_act = float(safe_act) if not pd.isna(safe_act) else 0.0
+
                     col_1, col_2, col_3 = st.columns(3)
+
                     with col_1:
-                        n_emp = st.text_input("填寫人", row_data.get('填寫人'), key="adm_e_emp")
-                        n_type = st.selectbox("生產類型", PROD_TYPES, index=PROD_TYPES.index(row_data.get('生產類型', '正常生產')) if row_data.get('生產類型') in PROD_TYPES else 0, key="adm_e_type")
-                        n_qty = st.number_input("數量", value=int(row_data.get('工件數量', 1)), key="adm_e_qty")
+                        n_emp = st.text_input(
+                            "填寫人",
+                            value=str(row_data.get('填寫人', '')),
+                            key=f"adm_e_emp_{edit_id}"
+                        )
+
+                        n_type = st.selectbox(
+                            "生產類型",
+                            PROD_TYPES,
+                            index=PROD_TYPES.index(row_data.get('生產類型', '正常生產')) if row_data.get('生產類型') in PROD_TYPES else 0,
+                            key=f"adm_e_type_{edit_id}"
+                        )
+
+                        n_qty = st.number_input(
+                            "數量",
+                            value=safe_qty,
+                            min_value=1,
+                            step=1,
+                            key=f"adm_e_qty_{edit_id}"
+                        )
+
                     with col_2:
-                        n_mac = st.selectbox("機台", MACHINE_TYPES, index=MACHINE_TYPES.index(row_data.get('機台類型', '磨床')) if row_data.get('機台類型') in MACHINE_TYPES else 0, key="adm_e_mac")
-                        n_est = st.number_input("預估工時", value=float(row_data.get('預估工時', 0)), key="adm_e_est")
-                        n_act = st.number_input("實際工時", value=float(row_data.get('實際工時', 0)), key="adm_e_act")
+                        n_mac = st.selectbox(
+                            "機台",
+                            MACHINE_TYPES,
+                            index=MACHINE_TYPES.index(row_data.get('機台類型', '磨床')) if row_data.get('機台類型') in MACHINE_TYPES else 0,
+                            key=f"adm_e_mac_{edit_id}"
+                        )
+
+                        n_est = st.number_input(
+                            "預估工時",
+                            value=safe_est,
+                            min_value=0.0,
+                            step=0.1,
+                            key=f"adm_e_est_{edit_id}"
+                        )
+
+                        n_act = st.number_input(
+                            "實際工時",
+                            value=safe_act,
+                            min_value=0.0,
+                            step=0.1,
+                            key=f"adm_e_act_{edit_id}"
+                        )
+
                     with col_3:
-                        n_stat = st.selectbox("狀態", ["進行中", "暫停中", "已完成", "已交接"], index=["進行中", "暫停中", "已完成", "已交接"].index(row_data.get('狀態', '已完成')) if row_data.get('狀態') in ["進行中", "暫停中", "已完成", "已交接"] else 3, key="adm_e_stat")
-                        n_note = st.text_area("備註", row_data.get('備註', ''), key="adm_e_note")
-                        
-                    if st.button("💾 儲存修改", type="primary"):
+                        status_options = ["進行中", "暫停中", "已完成", "已交接"]
+                        n_stat = st.selectbox(
+                            "狀態",
+                            status_options,
+                            index=status_options.index(row_data.get('狀態', '已完成')) if row_data.get('狀態') in status_options else 2,
+                            key=f"adm_e_stat_{edit_id}"
+                        )
+
+                        n_note = st.text_area(
+                            "備註",
+                            value=str(row_data.get('備註', '')),
+                            key=f"adm_e_note_{edit_id}"
+                        )
+
+                    if st.button("💾 儲存修改", type="primary", key=f"adm_save_{edit_id}"):
                         backup_factory_db()
                         rdb = load_work_orders_raw()
-                        m = rdb['工單ID'] == edit_id
+                        m = rdb['工單ID'].astype(str) == str(edit_id)
                         rdb.loc[m, ['填寫人','生產類型','工件數量','機台類型','預估工時','實際工時','狀態','備註']] = \
                             [n_emp, n_type, n_qty, n_mac, n_est, n_act, n_stat, n_note]
                         save_work_orders(rdb)
-                        st.success("✅ 修改成功！"); st.rerun()
-
+                        st.success("✅ 修改成功！")
+                        st.rerun()
         st.subheader("🗑️ 工單刪除")
         del_ids = st.multiselect("選擇要刪除的工單ID", list(db_df['工單ID']), key="adm_del_ids")
         if del_ids and st.checkbox("確認永久刪除") and st.button("☠️ 永久刪除"):
