@@ -1446,16 +1446,25 @@ with tab3:
 
                 machine_total_h = round(pd.to_numeric(done_df['實際工時'], errors='coerce').fillna(0).sum(), 1)
 
-                # 只用已完成工單來計算「有產出的人員與日期」
-                base_df = done_df.copy()
-                if not base_df.empty:
-                    base_df['日期_date'] = pd.to_datetime(base_df['日期'], errors='coerce').dt.date
-                    base_df = base_df.dropna(subset=['日期_date'])
-                    person_day_count = base_df[['日期_date', '填寫人']].drop_duplicates().shape[0]
-                else:
-                    person_day_count = 0
+                # 人員基準工時：依照「篩選日期區間」計算，不依賴是否有完成工單
+                # 個人模式：工作天數 × 1 人 × 8 小時
+                # 整體模式：工作天數 × 篩選資料中出現過的人數 × 8 小時
+                workday_count = 0
 
-                person_base_h = round(person_day_count * 8.0, 1)
+                if isinstance(d_range, (list, tuple)) and len(d_range) == 2:
+                    start_d, end_d = d_range[0], d_range[1]
+                    date_list = pd.date_range(start=start_d, end=end_d, freq="D")
+                    workday_count = sum(1 for d in date_list if d.weekday() < 5)  # 週一到週五
+                else:
+                    workday_count = 0
+
+                if v_mode == "個人":
+                    base_people_count = 1
+                else:
+                    # 整體模式用篩選資料中出現過的人數；避免用全員名單導致基準過大
+                    base_people_count = f_df['填寫人'].dropna().astype(str).str.strip().replace("", pd.NA).dropna().nunique()
+
+                person_base_h = round(workday_count * base_people_count * 8.0, 1)
                 extra_value_h = round(machine_total_h - person_base_h, 1)
                 value_ratio = round(machine_total_h / person_base_h, 2) if person_base_h > 0 else 0.0
 
