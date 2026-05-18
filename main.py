@@ -819,14 +819,29 @@ with tab1:
             # --- 磨床交接 / 換人接手區塊結束 ---
             
             p_reason = st.selectbox("暫停原因", PAUSE_REASONS, key=f"pr_{row['工單ID']}")
+            p_reason_other = ""
+
+            if p_reason == "其他":
+                p_reason_other = st.text_input(
+                    "請輸入其他暫停原因",
+                    key=f"pr_other_{row['工單ID']}",
+                    placeholder="例如：等客戶回覆、等圖面確認、臨時安排其他工作"
+                ).strip()
+
+            final_p_reason = f"其他：{p_reason_other}" if p_reason == "其他" and p_reason_other else p_reason
+
             if st.button("⏸️ 暫停加工", key=f"pb_{row['工單ID']}"):
-                curr = load_work_orders_raw()
-                mask = (curr['工單ID'] == row['工單ID']) & (curr['狀態'] == '進行中')
-                if not curr[mask].empty:
-                    curr.loc[mask, ['累積工作區間工時', '狀態', '暫停時間', '暫停原因']] = \
-                        [cur_h, '暫停中', datetime.now(TAIWAN_TZ).strftime("%Y-%m-%d %H:%M:%S"), p_reason]
-                    save_work_orders(curr)
-                    st.success("⏸️ 工單已暫停！"); st.rerun()
+                if p_reason == "其他" and not p_reason_other:
+                    st.error("❌ 選擇「其他」時，請輸入暫停原因。")
+                else:
+                    curr = load_work_orders_raw()
+                    mask = (curr['工單ID'] == row['工單ID']) & (curr['狀態'] == '進行中')
+                    if not curr[mask].empty:
+                        curr.loc[mask, ['累積工作區間工時', '狀態', '暫停時間', '暫停原因']] = \
+                            [cur_h, '暫停中', datetime.now(TAIWAN_TZ).strftime("%Y-%m-%d %H:%M:%S"), final_p_reason]
+                        save_work_orders(curr)
+                        st.success("⏸️ 工單已暫停！")
+                        st.rerun()
                     
             st.divider()
             
@@ -1242,14 +1257,29 @@ with tab2:
             # --- 放電/快走絲交接 / 換人接手區塊結束 ---
             
             p_reason_ew = st.selectbox("暫停原因", PAUSE_REASONS, key=f"pr_ew_{row['工單ID']}")
+            p_reason_ew_other = ""
+
+            if p_reason_ew == "其他":
+                p_reason_ew_other = st.text_input(
+                    "請輸入其他暫停原因",
+                    key=f"pr_ew_other_{row['工單ID']}",
+                    placeholder="例如：等客戶回覆、等圖面確認、臨時安排其他工作"
+                ).strip()
+
+            final_p_reason_ew = f"其他：{p_reason_ew_other}" if p_reason_ew == "其他" and p_reason_ew_other else p_reason_ew
+
             if st.button("⏸️ 暫停加工", key=f"pb_ew_{row['工單ID']}"):
-                curr = load_work_orders_raw()
-                mask = (curr['工單ID'] == row['工單ID']) & (curr['狀態'] == '進行中')
-                if not curr[mask].empty:
-                    curr.loc[mask, ['累積工作區間工時', '狀態', '暫停時間', '暫停原因']] = \
-                        [cur_h, '暫停中', datetime.now(TAIWAN_TZ).strftime("%Y-%m-%d %H:%M:%S"), p_reason_ew]
-                    save_work_orders(curr)
-                    st.success(f"⏸️ 工單已暫停！"); st.rerun()
+                if p_reason_ew == "其他" and not p_reason_ew_other:
+                    st.error("❌ 選擇「其他」時，請輸入暫停原因。")
+                else:
+                    curr = load_work_orders_raw()
+                    mask = (curr['工單ID'] == row['工單ID']) & (curr['狀態'] == '進行中')
+                    if not curr[mask].empty:
+                        curr.loc[mask, ['累積工作區間工時', '狀態', '暫停時間', '暫停原因']] = \
+                            [cur_h, '暫停中', datetime.now(TAIWAN_TZ).strftime("%Y-%m-%d %H:%M:%S"), final_p_reason_ew]
+                        save_work_orders(curr)
+                        st.success(f"⏸️ 工單已暫停！")
+                        st.rerun()
 
             st.divider()
             
