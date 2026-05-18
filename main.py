@@ -1437,44 +1437,50 @@ with tab3:
 
                 done_df = f_df[f_df['狀態'] == '已完成']
 
-                # --- KPI：人員基準工時 / 機台累積加工 / 超額產值 ---
-                # 說明：
-                # 人員基準工時：用「日期 × 人員 × 8 小時」計算，代表正常出勤基準。
-                # 機台累積加工工時：用已完成工單的「實際工時」加總，可包含快走絲、放電跨夜加工。
-                # 超額產值工時：機台累積加工工時 - 人員基準工時。
-                # 產值倍率：機台累積加工工時 ÷ 人員基準工時。
+                # --- KPI：人員基準 / 預估加工 / 實際加工 / 效率差 / 人員工時差 ---
+                # 人員基準工時 = 日期區間工作天 × 人數 × 8 小時
+                # 預估加工工時 = 已完成工單的預估工時加總
+                # 實際加工工時 = 已完成工單的實際工時加總
+                # 效率節省工時 = 預估加工工時 - 實際加工工時
+                # 人員工時差 = 人員基準工時 - 實際加工工時
 
-                machine_total_h = round(pd.to_numeric(done_df['實際工時'], errors='coerce').fillna(0).sum(), 1)
-
-                # 人員基準工時：依照「篩選日期區間」計算，不依賴是否有完成工單
-                # 個人模式：工作天數 × 1 人 × 8 小時
-                # 整體模式：工作天數 × 篩選資料中出現過的人數 × 8 小時
                 workday_count = 0
 
                 if isinstance(d_range, (list, tuple)) and len(d_range) == 2:
                     start_d, end_d = d_range[0], d_range[1]
                     date_list = pd.date_range(start=start_d, end=end_d, freq="D")
-                    workday_count = sum(1 for d in date_list if d.weekday() < 5)  # 週一到週五
+                    workday_count = sum(1 for d in date_list if d.weekday() < 5)
                 else:
                     workday_count = 0
 
                 if v_mode == "個人":
                     base_people_count = 1
                 else:
-                    # 整體模式用篩選資料中出現過的人數；避免用全員名單導致基準過大
-                    base_people_count = f_df['填寫人'].dropna().astype(str).str.strip().replace("", pd.NA).dropna().nunique()
+                    base_people_count = (
+                        f_df['填寫人']
+                        .dropna()
+                        .astype(str)
+                        .str.strip()
+                        .replace("", pd.NA)
+                        .dropna()
+                        .nunique()
+                    )
 
                 person_base_h = round(workday_count * base_people_count * 8.0, 1)
-                extra_value_h = round(machine_total_h - person_base_h, 1)
-                value_ratio = round(machine_total_h / person_base_h, 2) if person_base_h > 0 else 0.0
+
+                estimated_total_h = round(pd.to_numeric(done_df['預估工時'], errors='coerce').fillna(0).sum(), 1)
+                actual_total_h = round(pd.to_numeric(done_df['實際工時'], errors='coerce').fillna(0).sum(), 1)
+
+                eff_saved_h = round(estimated_total_h - actual_total_h, 1)
+                person_gap_h = round(person_base_h - actual_total_h, 1)
 
                 st.markdown("### 📌 關鍵指標彙總")
                 k1, k2, k3, k4, k5, k6 = st.columns(6)
                 k1.metric("人員基準工時", f"{person_base_h} h")
-                k2.metric("機台累積加工", f"{machine_total_h} h")
-                k3.metric("超額產值工時", f"{extra_value_h} h")
-                k4.metric("產值倍率", f"{value_ratio} 倍")
-                k5.metric("進行中工單", f"{len(f_df[f_df['狀態'] == '進行中'])} 筆")
+                k2.metric("預估加工工時", f"{estimated_total_h} h")
+                k3.metric("實際加工工時", f"{actual_total_h} h")
+                k4.metric("效率節省工時", f"{eff_saved_h} h")
+                k5.metric("人員工時差", f"{person_gap_h} h")
                 k6.metric("已完成工單", f"{len(done_df)} 筆")
 
                 with st.container(border=True):
