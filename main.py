@@ -1436,13 +1436,36 @@ with tab3:
                 if s_machine != "全部": f_df = f_df[f_df['機台類型'] == s_machine]
 
                 done_df = f_df[f_df['狀態'] == '已完成']
+
+                # --- KPI：人員基準工時 / 機台累積加工 / 超額產值 ---
+                # 說明：
+                # 人員基準工時：用「日期 × 人員 × 8 小時」計算，代表正常出勤基準。
+                # 機台累積加工工時：用已完成工單的「實際工時」加總，可包含快走絲、放電跨夜加工。
+                # 超額產值工時：機台累積加工工時 - 人員基準工時。
+                # 產值倍率：機台累積加工工時 ÷ 人員基準工時。
+
+                machine_total_h = round(pd.to_numeric(done_df['實際工時'], errors='coerce').fillna(0).sum(), 1)
+
+                # 只用已完成工單來計算「有產出的人員與日期」
+                base_df = done_df.copy()
+                if not base_df.empty:
+                    base_df['日期_date'] = pd.to_datetime(base_df['日期'], errors='coerce').dt.date
+                    base_df = base_df.dropna(subset=['日期_date'])
+                    person_day_count = base_df[['日期_date', '填寫人']].drop_duplicates().shape[0]
+                else:
+                    person_day_count = 0
+
+                person_base_h = round(person_day_count * 8.0, 1)
+                extra_value_h = round(machine_total_h - person_base_h, 1)
+                value_ratio = round(machine_total_h / person_base_h, 2) if person_base_h > 0 else 0.0
+
                 st.markdown("### 📌 關鍵指標彙總")
                 k1, k2, k3, k4, k5, k6 = st.columns(6)
-                k1.metric("總工作區間", f"{round(done_df['工作區間工時'].sum(), 1)} h")
-                k2.metric("總實際加工", f"{round(done_df['實際工時'].sum(), 1)} h")
-                k3.metric("區間未加工時間", f"{round(done_df['時間差異'].sum(), 1)} h", delta_color="inverse")
-                k4.metric("進行中工單", f"{len(f_df[f_df['狀態'] == '進行中'])} 筆")
-                k5.metric("暫停中工單", f"{len(f_df[f_df['狀態'] == '暫停中'])} 筆")
+                k1.metric("人員基準工時", f"{person_base_h} h")
+                k2.metric("機台累積加工", f"{machine_total_h} h")
+                k3.metric("超額產值工時", f"{extra_value_h} h")
+                k4.metric("產值倍率", f"{value_ratio} 倍")
+                k5.metric("進行中工單", f"{len(f_df[f_df['狀態'] == '進行中'])} 筆")
                 k6.metric("已完成工單", f"{len(done_df)} 筆")
 
                 with st.container(border=True):
