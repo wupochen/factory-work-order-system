@@ -1024,8 +1024,15 @@ with tab2:
                     new_qty = st.number_input("工件數量 / Số lượng", value=safe_qty, min_value=1, step=1, key=f"edit_ew_qty_{row['工單ID']}")
 
                     safe_est = pd.to_numeric(row.get('預估工時', 0), errors='coerce')
-                    safe_est = float(safe_est) if not pd.isna(safe_est) and safe_est > 0 else 0.1
-                    new_est = st.number_input("預估機台工時 / TG máy dự kiến (hrs)", value=safe_est, min_value=0.1, step=0.1, key=f"edit_ew_est_{row['工單ID']}")
+                    safe_est = max(0.1, float(safe_est)) if not pd.isna(safe_est) else 0.1
+
+                    new_est = st.number_input(
+                        "預估機台工時 / TG máy dự kiến (hrs)",
+                        value=safe_est,
+                        min_value=0.1,
+                        step=0.1,
+                        key=f"edit_ew_est_{row['工單ID']}",
+                    )
 
                     st.caption("⚠️ 若生產類型改為「NG重修」、「NG重製」或「重製」，以下為必填欄位：")
                     ng_disc = st.selectbox("發現人 / Người phát hiện (NG/重製必填)", emps, key=f"edit_ew_ngdisc_{row['工單ID']}")
